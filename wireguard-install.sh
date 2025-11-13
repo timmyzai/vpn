@@ -29,16 +29,18 @@ check_pkg() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y "$1" >/dev/null 2>&1
 }
 
+# --- FIX APPLIED HERE: Added 6 spaces for YAML indentation ---
 set_port() {
     local pattern="$1"
     local replace="$2"
     local file="$3"
+    local INDENT="      " # 6 spaces: 2 for 'services:' + 2 for 'wg-easy:' + 2 for 'ports:' list item (total 6)
 
     # If the exact replace line already exists, skip
     grep -qF "$replace" "$file" && return 0
 
     # First: try to replace an existing matching port line
-    awk -v pat="$pattern" -v rep="- \""$replace"\"" '
+    awk -v pat="$pattern" -v rep="${INDENT}- \""$replace"\"" '
         {
             if (index($0, pat) > 0) {
                 print rep
@@ -55,7 +57,7 @@ set_port() {
 
     # If no match was found, insert under `ports:`
     if grep -q "__NO_MATCH_FOUND__" "${file}.tmp"; then
-        awk -v rep="- \""$replace"\"" '
+        awk -v rep="${INDENT}- \""$replace"\"" '
             {
                 if ($0 ~ /ports:/) {
                     print
@@ -77,8 +79,9 @@ ensure_restart() {
     local file="$1"
     grep -q "restart: unless-stopped" "$file" && return 0
 
+    # Ensure correct 4-space YAML indentation for 'restart' under the service
     sed -i "\|image:.*wg-easy|a\\
-    \t\trestart: unless-stopped" "$file"
+        restart: unless-stopped" "$file"
 }
 
 find_compose() {
@@ -163,7 +166,8 @@ if [ $WG_INSTALLED -eq 1 ]; then
             read -rp "New WG_HOST: " new_host
             [ -z "$new_host" ] && exit 0
 
-            sed -i "s|^WG_HOST=.*|WG_HOST=${new_host}|" "$WG_ENV"
+            # Use '#' delimiter for sed to be safe, though $new_host shouldn't have '/'
+            sed -i "s#^WG_HOST=.*#WG_HOST=${new_host}#" "$WG_ENV"
             timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" down || true
             timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" up -d
 
@@ -211,7 +215,7 @@ echo "4) Quad9 9.9.9.9"
 read -rp "DNS [1-4]: " D
 D=${D:-1}
 
-# FIX/Correction: Extracting the actual DNS IP from resolv.conf avoids the sed error.
+# This section extracts the DNS IP address, avoiding the sed error.
 case $D in
     1) DNS=$(awk '/nameserver/{print $2;exit}' /etc/resolv.conf || echo "1.1.1.1") ;;
     2) DNS=1.1.1.1 ;;
@@ -251,6 +255,7 @@ fi
 mkdir -p "$WG_DIR"
 cd "$WG_DIR"
 
+# Download the base compose file
 if [ ! -f docker-compose.yml ]; then
     curl -fsSL -o docker-compose.yml \
         https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
@@ -261,6 +266,7 @@ if [ ! -s docker-compose.yml ]; then
     exit 1
 fi
 
+# Create .env file
 cat > .env <<EOF
 WG_HOST=${WG_HOST}
 PASSWORD=$(openssl rand -hex 16)
@@ -274,12 +280,14 @@ chmod 600 .env
 
 WG_BIND_IP="0.0.0.0"
 
+# Apply configuration changes to docker-compose.yml
 set_port "51820/udp" "$WG_BIND_IP:$WG_PORT:51820/udp" "$WG_COMPOSE"
 set_port "${ADMIN_PORT_INTERNAL}/tcp" "$BIND_IP:$ADMIN_PORT:$ADMIN_PORT_INTERNAL/tcp" "$WG_COMPOSE"
 ensure_restart "$WG_COMPOSE"
 
 echo "Starting..."
-timeout "$TIMEOUT" $COMPOSE up -d
+# Use -f explicitly to ensure the script finds the file in the correct path
+timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" up -d
 
 # --- Output ---
 header "INSTALL COMPLETE"
