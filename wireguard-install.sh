@@ -29,7 +29,6 @@ check_pkg() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y "$1" >/dev/null 2>&1
 }
 
-# Safe sed (delimiter = "|")
 set_port() {
     local pattern="$1"
     local replace="$2"
@@ -79,7 +78,7 @@ ensure_restart() {
     grep -q "restart: unless-stopped" "$file" && return 0
 
     sed -i "\|image:.*wg-easy|a\\
-        restart: unless-stopped" "$file"
+    \t\trestart: unless-stopped" "$file"
 }
 
 find_compose() {
@@ -205,13 +204,14 @@ ADMIN_PORT=${ADMIN_PORT:-$ADMIN_PORT_INTERNAL}
 
 echo -e "\n------ DNS RESOLVER ------"
 echo "Choose DNS for VPN clients:"
-echo "1) System DNS"
+echo "1) System DNS (from /etc/resolv.conf)"
 echo "2) Cloudflare 1.1.1.1"
 echo "3) Google 8.8.8.8"
 echo "4) Quad9 9.9.9.9"
 read -rp "DNS [1-4]: " D
 D=${D:-1}
 
+# FIX/Correction: Extracting the actual DNS IP from resolv.conf avoids the sed error.
 case $D in
     1) DNS=$(awk '/nameserver/{print $2;exit}' /etc/resolv.conf || echo "1.1.1.1") ;;
     2) DNS=1.1.1.1 ;;
