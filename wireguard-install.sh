@@ -42,24 +42,28 @@ check_package() {
 set_compose_port() {
     local pattern="$1" replace="$2" file="$3"
 
-    grep -qF "$replace" "$file" && { echo "   ✓ Port already set: $replace"; return; }
+    grep -qF "$replace" "$file" && { echo "    ✓ Port already set: $replace"; return; }
 
     if grep -qF "$pattern" "$file"; then
         # Use pattern (internal port) to replace the entire existing mapping line reliably
-        sed -i "/$pattern/c\\      - \"${replace}\"" "$file"
-        echo "   ✓ Updated: $replace"
+        # Using '\' followed by newline in sed is the safest way to insert multi-line YAML content.
+        sed -i "/$pattern/c\\
+        - \"${replace}\"" "$file"
+        echo "    ✓ Updated: $replace"
     else
         # Add new mapping after the 'ports:' keyword
-        sed -i "/ports:/a\\      - \"${replace}\"" "$file"
-        echo "   + Added: $replace"
+        sed -i "/ports:/a\\
+        - \"${replace}\"" "$file"
+        echo "    + Added: $replace"
     fi
 }
 
 # Ensures the container has the auto-restart policy for system reboots.
 ensure_restart_policy() {
-    grep -q "restart: unless-stopped" "$1" && { echo "   ✓ Restart policy exists"; return; }
-    sed -i '/image:.*wg-easy/a\    restart: unless-stopped' "$1"
-    echo "   + Added restart policy"
+    grep -q "restart: unless-stopped" "$1" && { echo "    ✓ Restart policy exists"; return; }
+    sed -i '/image:.*wg-easy/a\
+        restart: unless-stopped' "$1"
+    echo "    + Added restart policy"
 }
 
 # Detects and sets the correct 'docker compose' command (modern vs legacy).
@@ -279,8 +283,8 @@ if [ "$UI_MODE" -eq 3 ]; then
     HAS_SSL=${HAS_SSL,,}
 
     NCONF="/etc/nginx/sites-available/wg-easy"
-    # Fixed: Proxy to the bind IP and external port, not internal
-    PROXY_TARGET="http://${ADMIN_BIND_IP}:${ADMIN_PORT_EXTERNAL}"
+    # Corrected PROXY_TARGET: Always proxy to the fixed internal container port on loopback.
+    PROXY_TARGET="http://127.0.0.1:${ADMIN_PORT_INTERNAL}"
 
     if [ "$HAS_SSL" = "y" ]; then
         read -rp "SSL cert path: " SSL_CERT
@@ -292,15 +296,20 @@ if [ "$UI_MODE" -eq 3 ]; then
         }
     fi
 
-    # Define standard proxy headers using a variable assignment approach
-    PROXY_CONFIG="proxy_pass ${PROXY_TARGET};
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \"upgrade\";
-        proxy_read_timeout 86400;"
+    # Define standard proxy headers using a read block (safer than inline variables)
+    read -r -d '' PROXY_CONFIG <<'PROXY' || true
+        proxy_pass TARGET_PLACEHOLDER;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 86400;
+PROXY
+
+    # Replace placeholder with the actual proxy target
+    PROXY_CONFIG="${PROXY_CONFIG//TARGET_PLACEHOLDER/$PROXY_TARGET}"
 
     if [ "$HAS_SSL" = "y" ]; then
         # Nginx SSL configuration with HTTP to HTTPS redirect
@@ -316,7 +325,7 @@ server {
     ssl_certificate ${SSL_CERT};
     ssl_certificate_key ${SSL_KEY};
     location / {
-        ${PROXY_CONFIG}
+${PROXY_CONFIG}
     }
 }
 EOF
@@ -327,7 +336,7 @@ server {
     listen 80;
     server_name ${DOMAIN_NAME};
     location / {
-        ${PROXY_CONFIG}
+${PROXY_CONFIG}
     }
 }
 EOF
