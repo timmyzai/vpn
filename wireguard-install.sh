@@ -1,3 +1,14 @@
+I've successfully integrated your enhanced installation detection logic into the main script and double-checked all components for syntax and logic errors.
+
+The new **"Fast Detection of Existing Installation"** section is more robust because it now uses a priority check (Docker container status first, then file presence), and manages the installation status with the `$WG_INSTALLED` variable. I also incorporated your improved uninstallation logic (`2>/dev/null || true`) to prevent the script from crashing if the Docker Compose commands fail on a partially corrupted installation.
+
+Here is the complete, final, and corrected script.
+
+-----
+
+## 🚀 Final WireGuard Installer Script (Enhanced Detection)
+
+```bash
 #!/bin/bash
 # -----------------------------------------------------------------------------------
 # 🚀 WireGuard VPN Installer & Management Script (using wg-easy)
@@ -46,7 +57,6 @@ set_compose_port() {
 
     if grep -qF "$pattern" "$file"; then
         # Use pattern (internal port) to replace the entire existing mapping line reliably
-        # Using '\' followed by newline in sed is the safest way to insert multi-line YAML content.
         sed -i "/$pattern/c\\
         - \"${replace}\"" "$file"
         echo "    ✓ Updated: $replace"
@@ -98,11 +108,32 @@ check_package curl
 PRIVATE_IP=$(hostname -I | awk '{print $1}')
 PUBLIC_IP=$(curl -s ifconfig.me || echo "$PRIVATE_IP")
 
-command -v docker >/dev/null 2>&1 && find_docker_compose_cmd # Find compose command if docker is installed
+# The Docker compose command is only needed if an existing installation is detected or if we proceed to a new install.
+# We call it here only if Docker is available, otherwise we defer installation/detection until later.
+if command -v docker >/dev/null 2>&1; then
+    find_docker_compose_cmd
+fi
 
-# --- Existing Installation Detection -----------------------------------------------
+# --- Fast Detection of Existing Installation ---------------------------------------
 
-if [ -d "$WG_DIR" ] && [ -f "$WG_COMPOSE" ]; then
+WG_INSTALLED=0
+
+# 1) FASTEST: Check Docker container status (no error output)
+if command -v docker >/dev/null 2>&1 && docker ps --all --format '{{.Names}}' 2>/dev/null | grep -q '^wg-easy$'; then
+    WG_INSTALLED=1
+fi
+
+# 2) If container not found but compose file exists (means it was installed)
+if [ $WG_INSTALLED -eq 0 ] && [ -f "$WG_COMPOSE" ]; then
+    WG_INSTALLED=1
+fi
+
+# 3) Directory exists but no compose file (treat as corrupted install)
+if [ $WG_INSTALLED -eq 0 ] && [ -d "$WG_DIR" ]; then
+    WG_INSTALLED=1
+fi
+
+if [ $WG_INSTALLED -eq 1 ]; then
     print_header "WG-EASY ALREADY INSTALLED"
 
     cat <<EOF
@@ -123,14 +154,21 @@ EOF
             echo "WARNING: This will remove wg-easy, all configs, peers, and keys."
             read -rp "Type YES to confirm: " confirm
             [ "$confirm" = "YES" ] && {
-                $DOCKER_COMPOSE_CMD -f "$WG_COMPOSE" down
+                # Use DOCKER_COMPOSE_CMD if found, otherwise rely on directory removal
+                # The 2>/dev/null || true ensures the script doesn't crash on a missing command/compose file
+                [ -n "$DOCKER_COMPOSE_CMD" ] && $DOCKER_COMPOSE_CMD -f "$WG_COMPOSE" down 2>/dev/null || true
+                docker rm -f wg-easy 2>/dev/null || true # Ensure the container is gone
                 rm -rf "$WG_DIR"
                 echo "✓ Uninstalled completely"
             } || echo "Cancelled"
             exit 0
-            ;;
+        ;;
         3)
-            [ ! -f "$WG_ENV" ] && { echo "Error: .env file missing"; exit 1; }
+            if [ ! -f "$WG_ENV" ]; then
+                echo "Error: .env file missing. Cannot update WG_HOST."
+                exit 1
+            fi
+
             current=$(grep -E '^WG_HOST=' "$WG_ENV" | cut -d= -f2)
             echo ""
             echo "Current WG_HOST: $current"
@@ -143,7 +181,7 @@ EOF
                 echo "✓ Restarted"
             } || echo "No changes"
             exit 0
-            ;;
+        ;;
         4) exit 0 ;;
         *) echo "Invalid option"; exit 1 ;;
     esac
@@ -235,7 +273,7 @@ https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} s
     apt-get update -y >/dev/null 2>&1
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
     systemctl enable --now docker
-    find_docker_compose_cmd
+    find_docker_compose_cmd # Must be called after Docker is installed
     echo "✓ Docker installed"
 fi
 
@@ -283,7 +321,6 @@ if [ "$UI_MODE" -eq 3 ]; then
     HAS_SSL=${HAS_SSL,,}
 
     NCONF="/etc/nginx/sites-available/wg-easy"
-    # Corrected PROXY_TARGET: Always proxy to the fixed internal container port on loopback.
     PROXY_TARGET="http://127.0.0.1:${ADMIN_PORT_INTERNAL}"
 
     if [ "$HAS_SSL" = "y" ]; then
@@ -296,7 +333,7 @@ if [ "$UI_MODE" -eq 3 ]; then
         }
     fi
 
-    # Define standard proxy headers using a read block (safer than inline variables)
+    # Define standard proxy headers using a read block
     read -r -d '' PROXY_CONFIG <<'PROXY' || true
         proxy_pass TARGET_PLACEHOLDER;
         proxy_set_header Host $host;
@@ -375,3 +412,4 @@ Port Mapping    : ${ADMIN_PORT_EXTERNAL} -> $ADMIN_PORT_INTERNAL
 
 EOF
 exit 0
+```
