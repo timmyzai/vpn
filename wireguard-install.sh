@@ -151,7 +151,7 @@ read -rp "Mode [2]: " UI_MODE
 UI_MODE=${UI_MODE:-2}
 
 case "$UI_MODE" in
-    1) BIND_IP="$PRIVATE_IP" ;; # Bind to private IP for direct access (less secure, only HTTP)
+    1) BIND_IP="$PRIVATE_IP" ;; # Bind to private IP for direct access
     2|3) BIND_IP="127.0.0.1" ;; # Bind to localhost, requiring an ALB/Proxy
     *) echo "Invalid"; exit 1 ;;
 esac
@@ -160,14 +160,11 @@ read -rp "WG Port [51820]: " WG_PORT
 WG_PORT=${WG_PORT:-51820}
 [[ "$WG_PORT" =~ ^[0-9]+$ ]] && [ "$WG_PORT" -ge 1 ] && [ "$WG_PORT" -le 65535 ] || WG_PORT=51820
 
-# If using ALB mode, the external Admin port doesn't matter (always 51821 local).
-if [ "$UI_MODE" = 1 ]; then
-    read -rp "Admin Port [$ADMIN_PORT_INTERNAL]: " ADMIN_PORT
-    ADMIN_PORT=${ADMIN_PORT:-$ADMIN_PORT_INTERNAL}
-    [[ "$ADMIN_PORT" =~ ^[0-9]+$ ]] && [ "$ADMIN_PORT" -ge 1 ] && [ "$ADMIN_PORT" -le 65535 ] || ADMIN_PORT=$ADMIN_PORT_INTERNAL
-else
-    ADMIN_PORT=$ADMIN_PORT_INTERNAL
-fi
+# FIX: ALWAYS prompt for the external ADMIN_PORT for port mapping, regardless of mode.
+read -rp "Admin EXTERNAL Port (Used for ALB/Browser access) [$ADMIN_PORT_INTERNAL]: " ADMIN_PORT
+ADMIN_PORT=${ADMIN_PORT:-$ADMIN_PORT_INTERNAL}
+[[ "$ADMIN_PORT" =~ ^[0-9]+$ ]] && [ "$ADMIN_PORT" -ge 1 ] && [ "$ADMIN_PORT" -le 65535 ] || ADMIN_PORT=$ADMIN_PORT_INTERNAL
+
 
 # --- Updated DNS Resolver Block ---
 echo -e "\n------ DNS RESOLVER ------"
@@ -180,7 +177,8 @@ echo "4) Quad9      9.9.9.9"
 read -rp "DNS [1-4] (Default: 1): " D
 D=${D:-1}
 case $D in
-    1) DNS=$(awk '/nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null || echo "1.1.1.1");;
+    # FIX: Use head -n 1 to ensure only a single IP is captured, preventing sed issues.
+    1) DNS=$(awk '/nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null | head -n 1 || echo "1.1.1.1");;
     2) DNS=1.1.1.1;;
     3) DNS=8.8.8.8;;
     4) DNS=9.9.9.9;;
@@ -228,7 +226,8 @@ WG_BIND_IP="0.0.0.0"
 # WireGuard UDP Port mapping
 set_port "51820/udp" "${WG_BIND_IP}:${WG_PORT}:51820/udp" "$WG_COMPOSE"
 
-# Admin UI TCP Port mapping (Uses BIND_IP set above)
+# Admin UI TCP Port mapping
+# FIX: Port mapping now uses the user-defined ADMIN_PORT (External) -> ADMIN_PORT_INTERNAL (Container 51821)
 set_port "${ADMIN_PORT_INTERNAL}/tcp" "${BIND_IP}:${ADMIN_PORT}:${ADMIN_PORT_INTERNAL}/tcp" "$WG_COMPOSE"
 ensure_restart "$WG_COMPOSE"
 
@@ -255,19 +254,19 @@ case "$UI_MODE" in
     ;;
     2)
         echo -e "\nMODE 2: ALB + Route 53 (Recommended for HTTPS)"
-        echo "The Admin UI is bound to 127.0.0.1:${ADMIN_PORT_INTERNAL} (localhost)."
+        echo "The Admin UI is bound to 127.0.0.1:${ADMIN_PORT} (localhost)."
         echo "NEXT STEPS (Manual AWS Configuration):"
-        echo "1. Create an ALB/Target Group (Target Port: **${ADMIN_PORT_INTERNAL}**) and register EC2 **PRIVATE IP** (${PRIVATE_IP})."
+        echo "1. Create an ALB/Target Group (Target Port: **${ADMIN_PORT}**) and register EC2 **PRIVATE IP** (${PRIVATE_IP})."
         echo "2. Configure Route 53 **Public Hosted Zone** A-Record pointing to the ALB."
-        echo "Security Group: Open TCP 443 (from Internet to ALB) and TCP ${ADMIN_PORT_INTERNAL} (from ALB to EC2)."
+        echo "Security Group: Open TCP 443 (from Internet to ALB) and TCP ${ADMIN_PORT} (from ALB to EC2)."
     ;;
     3)
         echo -e "\nMODE 3: Private ALB + Route 53 (Internal HTTPS Admin UI)"
-        echo "The Admin UI is bound to 127.0.0.1:${ADMIN_PORT_INTERNAL} (localhost)."
+        echo "The Admin UI is bound to 127.0.0.1:${ADMIN_PORT} (localhost)."
         echo "NEXT STEPS (Manual AWS Configuration):"
-        echo "1. Create a **Private ALB** and Target Group (Target Port: **${ADMIN_PORT_INTERNAL}**) and register EC2 **PRIVATE IP** (${PRIVATE_IP})."
+        echo "1. Create a **Private ALB** and Target Group (Target Port: **${ADMIN_PORT}**) and register EC2 **PRIVATE IP** (${PRIVATE_IP})."
         echo "2. Configure Route 53 **Private Hosted Zone** A-Record pointing to the Private ALB."
-        echo "Security Group: Open TCP ${ADMIN_PORT_INTERNAL} (from Private ALB to EC2)."
+        echo "Security Group: Open TCP ${ADMIN_PORT} (from Private ALB to EC2)."
     ;;
 esac
 
