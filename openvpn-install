@@ -1,0 +1,239 @@
+#!/bin/bash
+# -----------------------------------------------------------------------------------
+# 🚀 OpenVPN Installer & Management Script
+# -----------------------------------------------------------------------------------
+# ⚙️ Compatibility:
+#   - OS Support: **Debian/Ubuntu**
+#
+# 🛡️ Security & Crypto:
+#   - Encryption: **AES-256-GCM** / **SHA256** standard.
+#   - Keys: Uses **ECC (prime256v1)** for fast, modern cryptography.
+#   - Tunnel Security: Implements **tls-crypt** (`ta.key`) for tunnel obfuscation.
+#
+# 🌐 Network & Configuration:
+#   - Protocols: Supports **UDP** (Default/Speed) and **TCP** (Stability).
+#   - Public IP: Automatic detection with **manual override**.
+#   - DNS: Choice of **System**, **Cloudflare**, **Google**, or **Quad9** DNS.
+#   - Routing: Sets up **IPTables MASQUERADE** for NAT.
+
+set -e
+
+# ------------------ BASIC CHECKS ------------------
+if [ "$EUID" -ne 0 ]; then echo "Run as root"; exit 1; fi
+if [ ! -e /dev/net/tun ]; then echo "TUN not enabled"; exit 1; fi
+if [ ! -e /etc/debian_version ]; then echo "Debian/Ubuntu only"; exit 1; fi
+
+LOCAL_IP=$(hostname -I | awk '{print $1}')
+PUBLIC_IP=$(curl -4 -s ifconfig.me || echo "$LOCAL_IP")
+
+# Export globals for functions
+export PUBLIC_IP LOCAL_IP
+
+# ------------------ CLIENT CREATOR ------------------
+new_client() {
+  N="$1"
+  cd /etc/openvpn/easy-rsa || exit 1
+
+  read -rp "Password protect client? [y/N] (default N): " PW
+  PASSOPT=$([[ ${PW,,} == y ]] && echo --pass || echo nopass)
+
+  EASYRSA_BATCH=1 ./easyrsa gen-req "$N" $PASSOPT
+  echo "yes" | EASYRSA_BATCH=1 ./easyrsa sign-req client "$N"
+
+  OUT="/root/$N.ovpn"
+
+  cat > "$OUT" <<EOF
+client
+dev tun
+proto $PROTO
+remote $PUBLIC_IP $PORT
+cipher AES-256-GCM
+auth SHA256
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+redirect-gateway def1
+remote-cert-tls server
+<ca>
+$(cat pki/ca.crt)
+</ca>
+<cert>
+$(awk '/BEGIN/,/END/' pki/issued/$N.crt)
+</cert>
+<key>
+$(cat pki/private/$N.key)
+</key>
+<tls-crypt>
+$(cat /etc/openvpn/ta.key)
+</tls-crypt>
+EOF
+
+  if [[ "$PROTO" == "udp" ]]; then
+    echo "explicit-exit-notify 1" >> "$OUT"
+  fi
+
+  echo "Client created: $OUT"
+}
+
+# ------------------ EXISTING INSTALL ------------------
+if [ -f /etc/openvpn/server/server.conf ]; then
+  echo "OpenVPN installation detected"
+  
+  # --- FIX IMPLEMENTED HERE: Load PORT and PROTO for client creation ---
+  export PROTO=$(awk '/^proto/ {print $2}' /etc/openvpn/server/server.conf)
+  export PORT=$(awk '/^port/ {print $2}' /etc/openvpn/server/server.conf)
+  # -------------------------------------------------------------------
+
+  echo "1) Add user"
+  echo "2) Revoke user"
+  echo "3) List users"
+  echo "4) Override public IP in all profiles"
+  echo "5) Remove OpenVPN"
+  echo "6) Exit"
+  read -rp "Choice: " CH
+
+  case $CH in
+    1)
+      read -rp "Client name: " N; new_client "$N"; exit;;
+
+    2)
+      USERS=($(tail -n +2 /etc/openvpn/easy-rsa/pki/index.txt | awk '/V/ {print $NF}'))
+      if [ ${#USERS[@]} -eq 0 ]; then echo "No users found"; exit; fi
+      echo "Existing users:"; for i in "${!USERS[@]}"; do echo "$((i+1))) ${USERS[$i]}"; done
+      read -rp "Select number to revoke: " IDX
+      SEL=${USERS[$((IDX-1))]}
+      cd /etc/openvpn/easy-rsa
+      echo "yes" | EASYRSA_BATCH=1 ./easyrsa revoke "$SEL"
+      EASYRSA_BATCH=1 ./easyrsa gen-crl
+      cp pki/crl.pem /etc/openvpn/server/crl.pem
+      echo "Revoked: $SEL"; exit;;
+
+    3)
+      USERS=($(tail -n +2 /etc/openvpn/easy-rsa/pki/index.txt | awk '/V/ {print $NF}'))
+      if [ ${#USERS[@]} -eq 0 ]; then echo "No users"; exit; fi
+      echo "Active users:"; printf "%s\n" "${USERS[@]}"; exit;;
+
+    4)
+      read -rp "New Public IP: " NEWIP
+      # PORT is available from the fix above
+      for f in /root/*.ovpn; do sed -i "s/^remote .*/remote $NEWIP $PORT/" "$f"; done
+      echo "Updated all .ovpn profiles"; exit;;
+
+    5)
+      systemctl disable --now openvpn-server@server || true
+      rm -rf /etc/openvpn
+      echo "OpenVPN removed"; exit;;
+
+    6) exit;;
+    *) echo "Invalid"; exit;;
+  esac
+fi
+
+# ------------------ FRESH INSTALL ------------------
+MISSING=()
+for PK in openvpn easy-rsa iptables curl; do
+  if ! command -v $PK >/dev/null 2>&1; then MISSING+=("$PK"); fi
+done
+if [ ${#MISSING[@]} -gt 0 ]; then
+  echo "Installing missing dependencies: ${MISSING[*]}"
+  apt update -y
+  apt install -y openvpn easy-rsa iptables curl
+fi
+
+# ------------------ INTERACTIVE SETUP ------------------
+echo "------ PUBLIC IP SETTINGS ------"
+echo "Detected Public IP: $PUBLIC_IP"
+read -rp "Override? [y/N]: " OVR
+if [[ ${OVR,,} == y ]]; then read -rp "Enter new IP: " PUBLIC_IP; fi
+export PUBLIC_IP
+
+echo "------ PORT SETTINGS ------"
+echo "OpenVPN Port (Default: 1194)"
+read -rp "Port: " PORT
+PORT=${PORT:-1194}
+export PORT
+
+echo "------ PROTOCOL ------"
+echo "1) UDP  (recommended for speed)"
+echo "2) TCP  (better in restricted networks)"
+read -rp "Protocol [1-2] (Default: 1): " P
+P=${P:-1}; PROTO=$([[ $P == 2 ]] && echo tcp || echo udp)
+export PROTO
+
+echo "------ DNS RESOLVER ------"
+echo "Choose DNS for VPN clients:"
+echo "1) System DNS  (from /etc/resolv.conf)"
+echo "2) Cloudflare 1.1.1.1"
+echo "3) Google     8.8.8.8"
+echo "4) Quad9      9.9.9.9"
+
+read -rp "DNS [1-4] (Default: 1): " D
+D=${D:-1}
+case $D in
+  1) DNS=$(awk '/nameserver/{print $2; exit}' /etc/resolv.conf);;
+  2) DNS=1.1.1.1;;
+  3) DNS=8.8.8.8;;
+  4) DNS=9.9.9.9;;
+esac
+
+# ------------------ EASYRSA SETUP ------------------
+if [[ -d /etc/openvpn/easy-rsa ]]; then
+  read -rp "EasyRSA already exists. Reset? [y/N]: " R
+  if [[ ${R,,} == y ]]; then rm -rf /etc/openvpn/easy-rsa; fi
+fi
+
+make-cadir /etc/openvpn/easy-rsa
+cd /etc/openvpn/easy-rsa
+
+cat > vars <<EOF
+set_var EASYRSA_ALGO ec
+set_var EASYRSA_CURVE prime256v1
+EOF
+
+./easyrsa init-pki
+EASYRSA_BATCH=1 ./easyrsa build-ca nopass
+EASYRSA_BATCH=1 ./easyrsa gen-req server nopass
+EASYRSA_BATCH=1 ./easyrsa sign-req server server
+touch /etc/openvpn/ta.key
+openvpn --genkey --secret /etc/openvpn/ta.key
+
+mkdir -p /etc/openvpn/server
+cat > /etc/openvpn/server/server.conf <<EOF
+port $PORT
+proto $PROTO
+dev tun
+dh none
+ecdh-curve prime256v1
+cipher AES-256-GCM
+auth SHA256
+tls-crypt /etc/openvpn/ta.key
+server 10.8.0.0 255.255.255.0
+push "redirect-gateway def1"
+push "dhcp-option DNS $DNS"
+ca /etc/openvpn/easy-rsa/pki/ca.crt
+cert /etc/openvpn/easy-rsa/pki/issued/server.crt
+key /etc/openvpn/easy-rsa/pki/private/server.key
+keepalive 10 120
+persist-key
+persist-tun
+verb 3
+EOF
+
+# ------------------ FIREWALL ------------------
+iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -j MASQUERADE
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# ------------------ START SERVICE ------------------
+systemctl enable openvpn-server@server
+systemctl restart openvpn-server@server
+
+echo "OpenVPN installed: $PUBLIC_IP:$PORT ($PROTO)"
+
+read -rp "Create first client? [y/N] (default N): " CC
+if [[ ${CC,,} == y ]]; then
+  read -rp "Client name: " NN
+  new_client "$NN"
+fi
+
+exit 0
