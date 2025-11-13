@@ -1,4 +1,3 @@
-```bash
 #!/bin/bash
 # -----------------------------------------------------------------------------------
 # 🚀 WireGuard VPN Installer & Management Script (using wg-easy)
@@ -371,4 +370,3 @@ Port Mapping    : ${ADMIN_PORT_EXTERNAL} -> $ADMIN_PORT_INTERNAL
 
 EOF
 exit 0
-```
