@@ -35,17 +35,43 @@ set_port() {
     local replace="$2"
     local file="$3"
 
+    # If the exact replace line already exists, skip
     grep -qF "$replace" "$file" && return 0
 
-    if grep -qF "$pattern" "$file"; then
-        sed -i.bak "\|$pattern|c\\
-- \"$replace\"" "$file"
+    # First: try to replace an existing matching port line
+    awk -v pat="$pattern" -v rep="- \""$replace"\"" '
+        {
+            if (index($0, pat) > 0) {
+                print rep
+                replaced=1
+            } else {
+                print
+            }
+        }
+        END {
+            if (replaced != 1)
+                print "__NO_MATCH_FOUND__"
+        }
+    ' "$file" > "${file}.tmp"
+
+    # If no match was found, insert under `ports:`
+    if grep -q "__NO_MATCH_FOUND__" "${file}.tmp"; then
+        awk -v rep="- \""$replace"\"" '
+            {
+                if ($0 ~ /ports:/) {
+                    print
+                    print rep
+                } else {
+                    print
+                }
+            }
+        ' "${file}.tmp" | grep -v "__NO_MATCH_FOUND__" > "${file}.patched"
     else
-        sed -i.bak "\|ports:|a\\
-- \"$replace\"" "$file"
+        mv "${file}.tmp" "${file}.patched"
     fi
 
-    rm -f "$file.bak"
+    mv "${file}.patched" "$file"
+    rm -f "${file}.tmp" 2>/dev/null || true
 }
 
 ensure_restart() {
