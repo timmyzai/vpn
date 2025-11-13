@@ -1,14 +1,3 @@
-I've successfully integrated your enhanced installation detection logic into the main script and double-checked all components for syntax and logic errors.
-
-The new **"Fast Detection of Existing Installation"** section is more robust because it now uses a priority check (Docker container status first, then file presence), and manages the installation status with the `$WG_INSTALLED` variable. I also incorporated your improved uninstallation logic (`2>/dev/null || true`) to prevent the script from crashing if the Docker Compose commands fail on a partially corrupted installation.
-
-Here is the complete, final, and corrected script.
-
------
-
-## 🚀 Final WireGuard Installer Script (Enhanced Detection)
-
-```bash
 #!/bin/bash
 # -----------------------------------------------------------------------------------
 # 🚀 WireGuard VPN Installer & Management Script (using wg-easy)
@@ -33,233 +22,165 @@ Here is the complete, final, and corrected script.
 #   - Management: Menu for **logs**, **uninstallation**, and **WG_HOST update**.
 # -----------------------------------------------------------------------------------
 
-set -e
+set -euo pipefail
 
-# --- Constants ---------------------------------------------------------------------
+# --- Config ---
+readonly WG_DIR="/etc/docker/containers/wg-easy"
+readonly WG_ENV="$WG_DIR/.env"
+readonly WG_COMPOSE="$WG_DIR/docker-compose.yml"
+readonly ADMIN_PORT_INTERNAL=51821
+readonly TIMEOUT=30
 
-WG_DIR="/etc/docker/containers/wg-easy"
-WG_ENV="$WG_DIR/.env"
-WG_COMPOSE="$WG_DIR/docker-compose.yml"
-ADMIN_PORT_INTERNAL=51821 # Fixed internal port for the wg-easy container
+# --- Functions ---
+check_pkg() { command -v "$1" >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y "$1" >/dev/null 2>&1; }
 
-# --- Functions ---------------------------------------------------------------------
-
-# Checks if a package is installed; installs it silently if missing.
-check_package() {
-    command -v "$1" >/dev/null 2>&1 || DEBIAN_FRONTEND=noninteractive apt-get install -y "$1"
-}
-
-# Safely adds or updates the container port mapping in docker-compose.yml.
-set_compose_port() {
+set_port() {
     local pattern="$1" replace="$2" file="$3"
-
-    grep -qF "$replace" "$file" && { echo "    ✓ Port already set: $replace"; return; }
-
+    grep -qF "$replace" "$file" && return 0
+    
+    # CRITICAL FIX 1: Use literal newline for sed multiline replacement
     if grep -qF "$pattern" "$file"; then
-        # Use pattern (internal port) to replace the entire existing mapping line reliably
         sed -i "/$pattern/c\\
         - \"${replace}\"" "$file"
-        echo "    ✓ Updated: $replace"
     else
-        # Add new mapping after the 'ports:' keyword
         sed -i "/ports:/a\\
         - \"${replace}\"" "$file"
-        echo "    + Added: $replace"
     fi
 }
 
-# Ensures the container has the auto-restart policy for system reboots.
-ensure_restart_policy() {
-    grep -q "restart: unless-stopped" "$1" && { echo "    ✓ Restart policy exists"; return; }
-    sed -i '/image:.*wg-easy/a\
+ensure_restart() {
+    grep -q "restart: unless-stopped" "$1" && return 0
+    # CRITICAL FIX 2: Use literal newline for sed multiline append
+    sed -i '/image:.*wg-easy/a\\
         restart: unless-stopped' "$1"
-    echo "    + Added restart policy"
 }
 
-# Detects and sets the correct 'docker compose' command (modern vs legacy).
-find_docker_compose_cmd() {
-    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-        DOCKER_COMPOSE_CMD="docker compose"
-    elif command -v docker-compose >/dev/null 2>&1; then
-        DOCKER_COMPOSE_CMD="docker-compose"
-    else
-        echo "Error: Docker Compose not found"; exit 1
-    fi
+find_compose() {
+    docker compose version >/dev/null 2>&1 && COMPOSE="docker compose" || COMPOSE="docker-compose"
+    command -v ${COMPOSE%% *} >/dev/null 2>&1 || { echo "Error: Docker Compose not found"; exit 1; }
 }
 
-# Standardized function for printing section headers.
-print_header() {
-    echo ""
-    echo "==========================================="
-    echo "  $1"
-    echo "==========================================="
-    echo ""
+header() { echo -e "\n=== $1 ===\n"; }
+
+get_ip() {
+    local ip=$(timeout 5 curl -s ifconfig.me 2>/dev/null || echo "")
+    [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && echo "$ip" || echo "$1"
 }
 
-# --- Initial Checks ----------------------------------------------------------------
-
-# Ensure script is run as root and on a Debian-based system
+# --- Checks ---
 [ "$EUID" -ne 0 ] && { echo "Run as root"; exit 1; }
 [ ! -e /etc/debian_version ] && { echo "Debian/Ubuntu only"; exit 1; }
 
-apt-get update -y >/dev/null 2>&1 # Silent update
-check_package curl
+apt-get update -y >/dev/null 2>&1
+check_pkg curl
 
 PRIVATE_IP=$(hostname -I | awk '{print $1}')
-PUBLIC_IP=$(curl -s ifconfig.me || echo "$PRIVATE_IP")
+PUBLIC_IP=$(get_ip "$PRIVATE_IP")
 
-# The Docker compose command is only needed if an existing installation is detected or if we proceed to a new install.
-# We call it here only if Docker is available, otherwise we defer installation/detection until later.
-if command -v docker >/dev/null 2>&1; then
-    find_docker_compose_cmd
-fi
+# Determine compose command only if docker is present, otherwise COMPOSE=""
+command -v docker >/dev/null 2>&1 && find_compose || COMPOSE=""
 
-# --- Fast Detection of Existing Installation ---------------------------------------
-
+# --- Existing Installation ---
 WG_INSTALLED=0
-
-# 1) FASTEST: Check Docker container status (no error output)
-if command -v docker >/dev/null 2>&1 && docker ps --all --format '{{.Names}}' 2>/dev/null | grep -q '^wg-easy$'; then
-    WG_INSTALLED=1
-fi
-
-# 2) If container not found but compose file exists (means it was installed)
-if [ $WG_INSTALLED -eq 0 ] && [ -f "$WG_COMPOSE" ]; then
-    WG_INSTALLED=1
-fi
-
-# 3) Directory exists but no compose file (treat as corrupted install)
-if [ $WG_INSTALLED -eq 0 ] && [ -d "$WG_DIR" ]; then
-    WG_INSTALLED=1
-fi
+# 1. Container Running/Existing
+command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^wg-easy$' && WG_INSTALLED=1
+# 2. Compose file exists
+[ $WG_INSTALLED -eq 0 ] && [ -f "$WG_COMPOSE" ] && WG_INSTALLED=1
+# 3. Directory exists (Minimal trace)
+[ $WG_INSTALLED -eq 0 ] && [ -d "$WG_DIR" ] && WG_INSTALLED=1
 
 if [ $WG_INSTALLED -eq 1 ]; then
-    print_header "WG-EASY ALREADY INSTALLED"
-
-    cat <<EOF
-What would you like to do?
-
-1) View logs
-2) Uninstall (remove completely)
-3) Change WG_HOST IP
-4) Exit
-
-EOF
-    read -rp "Select [1-4]: " choice
+    header "WG-EASY DETECTED"
+    echo "1) Logs  2) Uninstall  3) Change IP  4) Exit"
+    read -rp "Choice [1-4]: " choice
+    [ -z "$choice" ] && { echo "Invalid"; exit 1; }
 
     case "$choice" in
-        1) docker logs wg-easy -f; exit 0 ;;
+        1)
+            docker ps -a --format '{{.Names}}' | grep -q '^wg-easy$' || { echo "Container not found"; exit 1; }
+            echo -e "\nLogs (Ctrl+C to exit):\n"
+            docker logs wg-easy --tail 50 -f 2>&1 || true
+            exit 0
+        ;;
         2)
-            echo ""
-            echo "WARNING: This will remove wg-easy, all configs, peers, and keys."
-            read -rp "Type YES to confirm: " confirm
-            [ "$confirm" = "YES" ] && {
-                # Use DOCKER_COMPOSE_CMD if found, otherwise rely on directory removal
-                # The 2>/dev/null || true ensures the script doesn't crash on a missing command/compose file
-                [ -n "$DOCKER_COMPOSE_CMD" ] && $DOCKER_COMPOSE_CMD -f "$WG_COMPOSE" down 2>/dev/null || true
-                docker rm -f wg-easy 2>/dev/null || true # Ensure the container is gone
-                rm -rf "$WG_DIR"
-                echo "✓ Uninstalled completely"
-            } || echo "Cancelled"
+            echo -e "\nWARNING: Remove WireGuard + all data + Docker images"
+            read -rp "Type YES: " confirm
+            [ "$confirm" = "YES" ] || { echo "Cancelled"; exit 0; }
+            
+            echo "Removing..."
+            # Shutdown compose project if possible
+            [ -n "$COMPOSE" ] && [ -f "$WG_COMPOSE" ] && timeout $TIMEOUT $COMPOSE -f "$WG_COMPOSE" down 2>/dev/null || true
+            # Force remove container instance
+            docker rm -f wg-easy 2>/dev/null || true
+            # Remove specific image(s)
+            docker images --format '{{.Repository}}:{{.Tag}}' | grep 'wg-easy' | xargs -r docker rmi -f 2>/dev/null || true
+            # Prune dangling layers
+            docker image prune -af >/dev/null 2>&1 || true
+            # Remove configuration directory
+            rm -rf "$WG_DIR"
+            echo "✓ Uninstalled"
             exit 0
         ;;
         3)
-            if [ ! -f "$WG_ENV" ]; then
-                echo "Error: .env file missing. Cannot update WG_HOST."
-                exit 1
-            fi
-
-            current=$(grep -E '^WG_HOST=' "$WG_ENV" | cut -d= -f2)
-            echo ""
-            echo "Current WG_HOST: $current"
-            read -rp "Enter new WG_HOST: " new_host
-            [ -n "$new_host" ] && {
-                sed -i "s|^WG_HOST=.*|WG_HOST=${new_host}|" "$WG_ENV"
-                echo "✓ Updated to: $new_host"
-                $DOCKER_COMPOSE_CMD -f "$WG_COMPOSE" down
-                $DOCKER_COMPOSE_CMD -f "$WG_COMPOSE" up -d
-                echo "✓ Restarted"
-            } || echo "No changes"
+            [ ! -f "$WG_ENV" ] && { echo ".env missing"; exit 1; }
+            [ -z "$COMPOSE" ] && { echo "Docker Compose not found"; exit 1; }
+            
+            current=$(grep -E '^WG_HOST=' "$WG_ENV" 2>/dev/null | cut -d= -f2)
+            echo -e "\nCurrent: ${current:-<none>}"
+            read -rp "New WG_HOST: " new_host
+            [ -z "$new_host" ] && { echo "No change"; exit 0; }
+            
+            sed -i "s|^WG_HOST=.*|WG_HOST=${new_host}|" "$WG_ENV"
+            timeout $TIMEOUT $COMPOSE -f "$WG_COMPOSE" down 2>/dev/null || true
+            timeout $TIMEOUT $COMPOSE -f "$WG_COMPOSE" up -d || { echo "Restart failed"; exit 1; }
+            echo "✓ Updated to: $new_host"
             exit 0
         ;;
         4) exit 0 ;;
-        *) echo "Invalid option"; exit 1 ;;
+        *) echo "Invalid"; exit 1 ;;
     esac
 fi
 
-# --- New Installation --------------------------------------------------------------
+# --- New Install ---
+header "WIREGUARD INSTALLER"
+echo "Private: $PRIVATE_IP | Public: $PUBLIC_IP"
 
-print_header "WIREGUARD VPN INSTALLER"
-
-cat <<EOF
-Private IP : $PRIVATE_IP
-Public IP  : $PUBLIC_IP
-
-EOF
-
-read -rp "VPN endpoint hostname/IP (default: $PUBLIC_IP): " WG_HOST
+read -rp "WG_HOST [$PUBLIC_IP]: " WG_HOST
 WG_HOST=${WG_HOST:-$PUBLIC_IP}
 
-echo ""
-echo "Admin UI Exposure Mode:"
-echo ""
-cat <<EOF
-1) Public  (0.0.0.0:PORT) - accessible from anywhere
-2) Private ($PRIVATE_IP:PORT) - local network only
-3) Private + Nginx + Domain - with reverse proxy (recommended for security)
-
-EOF
-read -rp "Select [1-3] (default: 1): " UI_MODE
+echo -e "\nAdmin UI: 1) Public  2) Private  3) Nginx+Domain"
+read -rp "Mode [1]: " UI_MODE
 UI_MODE=${UI_MODE:-1}
 
 case "$UI_MODE" in
-    1) ADMIN_BIND_IP="0.0.0.0" ;;
-    2|3) ADMIN_BIND_IP="$PRIVATE_IP" ;;
-    *) echo "Invalid option"; exit 1 ;;
+    1) BIND_IP="0.0.0.0" ;;
+    2|3) BIND_IP="$PRIVATE_IP" ;;
+    *) echo "Invalid"; exit 1 ;;
 esac
 
-echo ""
-read -rp "WireGuard UDP port (default: 51820): " WG_PORT
+read -rp "WG Port [51820]: " WG_PORT
 WG_PORT=${WG_PORT:-51820}
+[[ "$WG_PORT" =~ ^[0-9]+$ ]] && [ "$WG_PORT" -ge 1 ] && [ "$WG_PORT" -le 65535 ] || WG_PORT=51820
 
-read -rp "Admin UI external port (default: $ADMIN_PORT_INTERNAL): " ADMIN_PORT_EXTERNAL
-ADMIN_PORT_EXTERNAL=${ADMIN_PORT_EXTERNAL:-$ADMIN_PORT_INTERNAL}
+read -rp "Admin Port [$ADMIN_PORT_INTERNAL]: " ADMIN_PORT
+ADMIN_PORT=${ADMIN_PORT:-$ADMIN_PORT_INTERNAL}
+[[ "$ADMIN_PORT" =~ ^[0-9]+$ ]] && [ "$ADMIN_PORT" -ge 1 ] && [ "$ADMIN_PORT" -le 65535 ] || ADMIN_PORT=$ADMIN_PORT_INTERNAL
 
-echo ""
-echo "DNS Resolver for VPN Clients:"
-echo ""
-cat <<EOF
-1) System DNS  (from /etc/resolv.conf)
-2) Cloudflare  (1.1.1.1)
-3) Google      (8.8.8.8)
-4) Quad9       (9.9.9.9)
-
-EOF
-read -rp "Select [1-4] (default: 2): " DNS_CHOICE
+echo -e "\nDNS: 1) System  2) Cloudflare  3) Google  4) Quad9"
+read -rp "Choice [2]: " DNS_CHOICE
 DNS_CHOICE=${DNS_CHOICE:-2}
 
 case $DNS_CHOICE in
-    1) WG_DEFAULT_DNS=$(awk '/nameserver/{print $2; exit}' /etc/resolv.conf) ;;
-    2) WG_DEFAULT_DNS="1.1.1.1" ;;
-    3) WG_DEFAULT_DNS="8.8.8.8" ;;
-    4) WG_DEFAULT_DNS="9.9.9.9" ;;
-    *) WG_DEFAULT_DNS="1.1.1.1"; echo "Invalid choice, using Cloudflare" ;;
+    1) DNS=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null || echo "1.1.1.1") ;;
+    2) DNS="1.1.1.1" ;;
+    3) DNS="8.8.8.8" ;;
+    4) DNS="9.9.9.9" ;;
+    *) DNS="1.1.1.1" ;;
 esac
 
-echo ""
-echo "Configuration Summary:"
-echo ""
-cat <<EOF
-WG_HOST             : $WG_HOST
-WG_PORT             : $WG_PORT
-ADMIN_BIND          : $ADMIN_BIND_IP
-ADMIN_PORT_EXTERNAL : $ADMIN_PORT_EXTERNAL -> Container :$ADMIN_PORT_INTERNAL
-DNS                 : $WG_DEFAULT_DNS
+echo -e "\nConfig: $WG_HOST:$WG_PORT | Admin: $BIND_IP:$ADMIN_PORT | DNS: $DNS\n"
 
-EOF
-
-# --- Docker Installation -----------------------------------------------------------
-
+# --- Docker Install ---
 if ! command -v docker >/dev/null 2>&1; then
     echo "Installing Docker..."
     apt-get install -y ca-certificates curl gnupg lsb-release >/dev/null 2>&1
@@ -267,75 +188,66 @@ if ! command -v docker >/dev/null 2>&1; then
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
     chmod a+r /etc/apt/keyrings/docker.asc
     . /etc/os-release
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" \
-    > /etc/apt/sources.list.d/docker.list
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
     apt-get update -y >/dev/null 2>&1
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null 2>&1
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
     systemctl enable --now docker
-    find_docker_compose_cmd # Must be called after Docker is installed
+    sleep 2 # Give Docker a moment to start
+    find_compose # Find the newly installed compose command
     echo "✓ Docker installed"
 fi
 
-# --- wg-easy Setup -----------------------------------------------------------------
-
+# --- Setup ---
 mkdir -p "$WG_DIR" && cd "$WG_DIR"
+[ ! -f docker-compose.yml ] && curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
 
-[ ! -f docker-compose.yml ] && \
-    curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
-
-WG_PASSWORD=$(openssl rand -hex 16)
-
-# Create .env file with all necessary configuration variables
+# CRITICAL FIX 3: Add PORT=${ADMIN_PORT_INTERNAL}
 cat > .env <<EOF
 WG_HOST=${WG_HOST}
-PASSWORD=${WG_PASSWORD}
+PASSWORD=$(openssl rand -hex 16)
 WG_PORT=${WG_PORT}
-WG_DEFAULT_DNS=${WG_DEFAULT_DNS}
+PORT=${ADMIN_PORT_INTERNAL}
+WG_DEFAULT_DNS=${DNS}
 WG_ALLOWED_IPS=0.0.0.0/0,::/0
 EOF
+chmod 600 .env
 
-chmod 600 .env # Secure the sensitive password/config file
+# FIX: HIGH #1 - Use ::/0 (or 0.0.0.0) for dual-stack support in compose.
+# The Docker standard for dual-stack is to use 0.0.0.0, which binds to all interfaces (IPv4 and IPv6)
+WG_BIND_IP="0.0.0.0"
 
-# Apply port mappings: WG_PORT:51820/udp and ADMIN_PORT_EXTERNAL:51821/tcp
-set_compose_port "51820/udp" "0.0.0.0:${WG_PORT}:51820/udp" "$WG_COMPOSE"
-set_compose_port "${ADMIN_PORT_INTERNAL}/tcp" "${ADMIN_BIND_IP}:${ADMIN_PORT_EXTERNAL}:${ADMIN_PORT_INTERNAL}/tcp" "$WG_COMPOSE"
+# WireGuard UDP Port mapping
+set_port "51820/udp" "${WG_BIND_IP}:${WG_PORT}:51820/udp" "$WG_COMPOSE"
 
-ensure_restart_policy "$WG_COMPOSE"
+# Admin UI TCP Port mapping
+set_port "${ADMIN_PORT_INTERNAL}/tcp" "${BIND_IP}:${ADMIN_PORT}:${ADMIN_PORT_INTERNAL}/tcp" "$WG_COMPOSE"
+ensure_restart "$WG_COMPOSE"
 
-echo "Starting wg-easy container..."
-$DOCKER_COMPOSE_CMD up -d
+echo "Starting..."
+timeout $TIMEOUT $COMPOSE up -d || { echo "Start failed"; exit 1; }
 
-# --- Nginx Setup (Mode 3) ----------------------------------------------------------
 
+# --- Nginx (Mode 3) ---
 if [ "$UI_MODE" -eq 3 ]; then
-    check_package nginx
-
-    echo ""
-    echo "Nginx Configuration:"
-    echo ""
-    read -rp "Domain (e.g., vpn.example.com): " DOMAIN_NAME
-    DOMAIN_NAME=$(echo "$DOMAIN_NAME" | xargs)
-
-    read -rp "SSL certificates available? [y/N] (default: N): " HAS_SSL
-    HAS_SSL=${HAS_SSL,,}
-
+    check_pkg nginx
+    
+    read -rp "Domain: " DOMAIN
+    DOMAIN=$(echo "$DOMAIN" | xargs)
+    [ -z "$DOMAIN" ] && { echo "Domain required"; exit 1; }
+    
+    read -rp "SSL cert path (leave empty for HTTP): " SSL_CERT
+    
     NCONF="/etc/nginx/sites-available/wg-easy"
-    PROXY_TARGET="http://127.0.0.1:${ADMIN_PORT_INTERNAL}"
-
-    if [ "$HAS_SSL" = "y" ]; then
-        read -rp "SSL cert path: " SSL_CERT
-        read -rp "SSL key path : " SSL_KEY
-
-        [ ! -f "$SSL_CERT" ] || [ ! -f "$SSL_KEY" ] && {
-            echo "SSL files not found - using HTTP"
-            HAS_SSL="n"
-        }
+    
+    if [ -n "$SSL_CERT" ]; then
+        read -rp "SSL key path: " SSL_KEY
+        [ ! -f "$SSL_CERT" ] || [ ! -f "$SSL_KEY" ] && { echo "SSL files not found, using HTTP"; SSL_CERT=""; }
     fi
+    
+    PROXY_PASS="http://127.0.0.1:${ADMIN_PORT_INTERNAL}"
 
-    # Define standard proxy headers using a read block
-    read -r -d '' PROXY_CONFIG <<'PROXY' || true
-        proxy_pass TARGET_PLACEHOLDER;
+    PROXY_HEADERS='
+        proxy_pass PROXY_PASS_PLACEHOLDER;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -343,73 +255,63 @@ if [ "$UI_MODE" -eq 3 ]; then
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 86400;
-PROXY
+        proxy_http_version 1.1;'
+    
+    # CRITICAL FIX 4: Use printf/sed for safe $host replacement
+    PROXY_HEADERS=$(printf "%s" "$PROXY_HEADERS" | sed "s|PROXY_PASS_PLACEHOLDER|$PROXY_PASS|g")
 
-    # Replace placeholder with the actual proxy target
-    PROXY_CONFIG="${PROXY_CONFIG//TARGET_PLACEHOLDER/$PROXY_TARGET}"
-
-    if [ "$HAS_SSL" = "y" ]; then
-        # Nginx SSL configuration with HTTP to HTTPS redirect
+    if [ -n "$SSL_CERT" ]; then
         cat > "$NCONF" <<EOF
 server {
     listen 80;
-    server_name ${DOMAIN_NAME};
+    server_name ${DOMAIN};
     return 301 https://\$host\$request_uri;
 }
 server {
-    listen 443 ssl;
-    server_name ${DOMAIN_NAME};
+    listen 443 ssl http2;
+    server_name ${DOMAIN};
     ssl_certificate ${SSL_CERT};
     ssl_certificate_key ${SSL_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
     location / {
-${PROXY_CONFIG}
+${PROXY_HEADERS}
     }
 }
 EOF
     else
-        # Nginx plain HTTP configuration
         cat > "$NCONF" <<EOF
 server {
     listen 80;
-    server_name ${DOMAIN_NAME};
+    server_name ${DOMAIN};
     location / {
-${PROXY_CONFIG}
+${PROXY_HEADERS}
     }
 }
 EOF
     fi
-
-    ln -sf "$NCONF" /etc/nginx/sites-enabled/wg-easy # Enable the site config
-    rm -f /etc/nginx/sites-enabled/default 2>/dev/null # Remove default Nginx site
-
-    nginx -t && systemctl restart nginx && echo "✓ Nginx configured" || {
-        echo "✗ Nginx config failed"
-        exit 1
-    }
+    
+    ln -sf "$NCONF" /etc/nginx/sites-enabled/wg-easy
+    rm -f /etc/nginx/sites-enabled/default 2>/dev/null
+    nginx -t && systemctl restart nginx && echo "✓ Nginx configured" || { echo "Nginx failed"; exit 1; }
 fi
 
-# --- Summary -----------------------------------------------------------------------
-
-print_header "INSTALLATION COMPLETE"
-
-cat <<EOF
-WireGuard Endpoint : ${WG_HOST}:${WG_PORT}/udp
-Admin Password     : ${WG_PASSWORD}
-
-EOF
+# --- Done ---
+header "INSTALLATION COMPLETE"
+PASSWORD=$(grep -E '^PASSWORD=' "$WG_ENV" | cut -d= -f2)
+echo "Endpoint: ${WG_HOST}:${WG_PORT}/udp"
+echo "Password: ${PASSWORD}"
 
 case "$UI_MODE" in
-    1) echo "Admin UI: http://${PUBLIC_IP}:${ADMIN_PORT_EXTERNAL}" ;;
-    2) echo "Admin UI: http://${PRIVATE_IP}:${ADMIN_PORT_EXTERNAL}" ;;
-    3) echo "Admin UI: $([ "$HAS_SSL" = "y" ] && echo "https" || echo "http")://${DOMAIN_NAME}" ;;
+    1) echo "Admin UI: http://${PUBLIC_IP}:${ADMIN_PORT}" ;;
+    2) echo "Admin UI: http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
+    3) echo "Admin UI: $([ -n "$SSL_CERT" ] && echo "https" || echo "http")://${DOMAIN}" ;;
 esac
 
-cat <<EOF
+echo -e "\nConfig: $WG_DIR/.env | Port: $ADMIN_PORT -> $ADMIN_PORT_INTERNAL"
+echo -e "\n\n⚠️ **IMPORTANT: Cloud Firewall / Security Group**"
+echo "You MUST open the following ports in your AWS/Cloud Security Group:"
+echo "  - **UDP ${WG_PORT}** (WireGuard VPN Traffic)"
+echo "  - **TCP ${ADMIN_PORT}** (Admin Web UI)"
 
-Config Location : $WG_DIR/.env
-Auto-start      : enabled
-Port Mapping    : ${ADMIN_PORT_EXTERNAL} -> $ADMIN_PORT_INTERNAL
-
-EOF
 exit 0
-```
