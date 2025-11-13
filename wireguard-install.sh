@@ -7,19 +7,11 @@
 #   - Container Engine: **Docker** (with Compose Plugin or legacy docker-compose).
 #
 # 🛡️ Security & Access:
-#   - VPN Protocol: **WireGuard** (modern, fast, cryptographically sound).
-#   - Access Control: Generates a **unique Hex password** for Admin UI access.
-#   - Admin UI Modes: Supports **Public**, **Private**, and **Nginx Reverse Proxy** (with optional SSL).
-#
-# 🌐 Network & Configuration:
-#   - Protocol: Uses **UDP** (Standard WireGuard transport).
-#   - Port Mapping: **Idempotent** and supports **custom external ports** for Admin UI.
-#   - Public IP: Automatic detection with **manual override** for WG_HOST.
-#   - DNS: Choice of **System**, **Cloudflare**, **Google**, or **Quad9** DNS for clients.
+#   - Admin UI Modes: **Cloud-Optimized** (Direct HTTP, Public ALB, Private ALB for HTTPS).
+#   - WireGuard Port Binding: **Dual-stack compatible** (IPv4/IPv6).
 #
 # 🛠️ Maintenance & Stability:
-#   - Restart Policy: Sets restart: unless-stopped for **automatic reboot** persistence.
-#   - Management: Menu for **logs**, **uninstallation**, and **WG_HOST update**.
+#   - Management: Menu for **logs**, **robust uninstallation**, and **WG_HOST update**.
 # -----------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -104,8 +96,9 @@ if [ $WG_INSTALLED -eq 1 ]; then
         ;;
         2)
             echo -e "\nWARNING: Remove WireGuard + all data + Docker images"
-            read -rp "Type YES: " confirm
-            [ "$confirm" = "YES" ] || { echo "Cancelled"; exit 0; }
+            # Change: Make Uninstall check easier (y/n)
+            read -rp "Are you SURE you want to uninstall? (y/N): " confirm_uninstall
+            [[ "$confirm_uninstall" =~ ^[yY]$ ]] || { echo "Cancelled"; exit 0; }
             
             echo "Removing..."
             # Shutdown compose project if possible
@@ -141,20 +134,25 @@ if [ $WG_INSTALLED -eq 1 ]; then
     esac
 fi
 
-# --- New Install ---
+# ----------------------------------------
+# --- New Install (Cloud Optimized) ---
+# ----------------------------------------
 header "WIREGUARD INSTALLER"
 echo "Private: $PRIVATE_IP | Public: $PUBLIC_IP"
 
 read -rp "WG_HOST [$PUBLIC_IP]: " WG_HOST
 WG_HOST=${WG_HOST:-$PUBLIC_IP}
 
-echo -e "\nAdmin UI: 1) Public  2) Private  3) Nginx+Domain"
-read -rp "Mode [1]: " UI_MODE
-UI_MODE=${UI_MODE:-1}
+echo -e "\nAdmin UI Exposure Method (HTTPS Recommended):"
+echo "1) Direct IP (HTTP Admin UI - Less Secure)"
+echo "2) ALB + Route 53 Public Zone (Recommended for Production HTTPS)"
+echo "3) Private ALB + Route 53 Private Zone (Recommended for Internal HTTPS)"
+read -rp "Mode [2]: " UI_MODE
+UI_MODE=${UI_MODE:-2}
 
 case "$UI_MODE" in
-    1) BIND_IP="0.0.0.0" ;;
-    2|3) BIND_IP="$PRIVATE_IP" ;;
+    1) BIND_IP="$PRIVATE_IP" ;; # Bind to private IP for direct access (less secure, only HTTP)
+    2|3) BIND_IP="127.0.0.1" ;; # Bind to localhost, requiring an ALB/Proxy
     *) echo "Invalid"; exit 1 ;;
 esac
 
@@ -162,23 +160,35 @@ read -rp "WG Port [51820]: " WG_PORT
 WG_PORT=${WG_PORT:-51820}
 [[ "$WG_PORT" =~ ^[0-9]+$ ]] && [ "$WG_PORT" -ge 1 ] && [ "$WG_PORT" -le 65535 ] || WG_PORT=51820
 
-read -rp "Admin Port [$ADMIN_PORT_INTERNAL]: " ADMIN_PORT
-ADMIN_PORT=${ADMIN_PORT:-$ADMIN_PORT_INTERNAL}
-[[ "$ADMIN_PORT" =~ ^[0-9]+$ ]] && [ "$ADMIN_PORT" -ge 1 ] && [ "$ADMIN_PORT" -le 65535 ] || ADMIN_PORT=$ADMIN_PORT_INTERNAL
+# If using ALB mode, the external Admin port doesn't matter (always 51821 local).
+if [ "$UI_MODE" = 1 ]; then
+    read -rp "Admin Port [$ADMIN_PORT_INTERNAL]: " ADMIN_PORT
+    ADMIN_PORT=${ADMIN_PORT:-$ADMIN_PORT_INTERNAL}
+    [[ "$ADMIN_PORT" =~ ^[0-9]+$ ]] && [ "$ADMIN_PORT" -ge 1 ] && [ "$ADMIN_PORT" -le 65535 ] || ADMIN_PORT=$ADMIN_PORT_INTERNAL
+else
+    ADMIN_PORT=$ADMIN_PORT_INTERNAL
+fi
 
-echo -e "\nDNS: 1) System  2) Cloudflare  3) Google  4) Quad9"
-read -rp "Choice [2]: " DNS_CHOICE
-DNS_CHOICE=${DNS_CHOICE:-2}
+# --- Updated DNS Resolver Block ---
+echo -e "\n------ DNS RESOLVER ------"
+echo "Choose DNS for VPN clients:"
+echo "1) System DNS  (from /etc/resolv.conf)"
+echo "2) Cloudflare 1.1.1.1"
+echo "3) Google     8.8.8.8"
+echo "4) Quad9      9.9.9.9"
 
-case $DNS_CHOICE in
-    1) DNS=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null || echo "1.1.1.1") ;;
-    2) DNS="1.1.1.1" ;;
-    3) DNS="8.8.8.8" ;;
-    4) DNS="9.9.9.9" ;;
-    *) DNS="1.1.1.1" ;;
+read -rp "DNS [1-4] (Default: 1): " D
+D=${D:-1}
+case $D in
+    1) DNS=$(awk '/nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null || echo "1.1.1.1");;
+    2) DNS=1.1.1.1;;
+    3) DNS=8.8.8.8;;
+    4) DNS=9.9.9.9;;
+    *) DNS=1.1.1.1;; # Fallback
 esac
+# --- End Updated DNS Resolver Block ---
 
-echo -e "\nConfig: $WG_HOST:$WG_PORT | Admin: $BIND_IP:$ADMIN_PORT | DNS: $DNS\n"
+echo -e "\nConfig: $WG_HOST:$WG_PORT | Admin Bind: $BIND_IP:$ADMIN_PORT | DNS: $DNS\n"
 
 # --- Docker Install ---
 if ! command -v docker >/dev/null 2>&1; then
@@ -212,89 +222,18 @@ WG_ALLOWED_IPS=0.0.0.0/0,::/0
 EOF
 chmod 600 .env
 
-# FIX: HIGH #1 - Use ::/0 (or 0.0.0.0) for dual-stack support in compose.
-# The Docker standard for dual-stack is to use 0.0.0.0, which binds to all interfaces (IPv4 and IPv6)
+# FIX: HIGH #1 - Dual-stack WireGuard port binding
 WG_BIND_IP="0.0.0.0"
 
 # WireGuard UDP Port mapping
 set_port "51820/udp" "${WG_BIND_IP}:${WG_PORT}:51820/udp" "$WG_COMPOSE"
 
-# Admin UI TCP Port mapping
+# Admin UI TCP Port mapping (Uses BIND_IP set above)
 set_port "${ADMIN_PORT_INTERNAL}/tcp" "${BIND_IP}:${ADMIN_PORT}:${ADMIN_PORT_INTERNAL}/tcp" "$WG_COMPOSE"
 ensure_restart "$WG_COMPOSE"
 
 echo "Starting..."
 timeout $TIMEOUT $COMPOSE up -d || { echo "Start failed"; exit 1; }
-
-
-# --- Nginx (Mode 3) ---
-if [ "$UI_MODE" -eq 3 ]; then
-    check_pkg nginx
-    
-    read -rp "Domain: " DOMAIN
-    DOMAIN=$(echo "$DOMAIN" | xargs)
-    [ -z "$DOMAIN" ] && { echo "Domain required"; exit 1; }
-    
-    read -rp "SSL cert path (leave empty for HTTP): " SSL_CERT
-    
-    NCONF="/etc/nginx/sites-available/wg-easy"
-    
-    if [ -n "$SSL_CERT" ]; then
-        read -rp "SSL key path: " SSL_KEY
-        [ ! -f "$SSL_CERT" ] || [ ! -f "$SSL_KEY" ] && { echo "SSL files not found, using HTTP"; SSL_CERT=""; }
-    fi
-    
-    PROXY_PASS="http://127.0.0.1:${ADMIN_PORT_INTERNAL}"
-
-    PROXY_HEADERS='
-        proxy_pass PROXY_PASS_PLACEHOLDER;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 86400;
-        proxy_http_version 1.1;'
-    
-    # CRITICAL FIX 4: Use printf/sed for safe $host replacement
-    PROXY_HEADERS=$(printf "%s" "$PROXY_HEADERS" | sed "s|PROXY_PASS_PLACEHOLDER|$PROXY_PASS|g")
-
-    if [ -n "$SSL_CERT" ]; then
-        cat > "$NCONF" <<EOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
-    return 301 https://\$host\$request_uri;
-}
-server {
-    listen 443 ssl http2;
-    server_name ${DOMAIN};
-    ssl_certificate ${SSL_CERT};
-    ssl_certificate_key ${SSL_KEY};
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_cache shared:SSL:10m;
-    location / {
-${PROXY_HEADERS}
-    }
-}
-EOF
-    else
-        cat > "$NCONF" <<EOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
-    location / {
-${PROXY_HEADERS}
-    }
-}
-EOF
-    fi
-    
-    ln -sf "$NCONF" /etc/nginx/sites-enabled/wg-easy
-    rm -f /etc/nginx/sites-enabled/default 2>/dev/null
-    nginx -t && systemctl restart nginx && echo "✓ Nginx configured" || { echo "Nginx failed"; exit 1; }
-fi
 
 # --- Done ---
 header "INSTALLATION COMPLETE"
@@ -302,16 +241,35 @@ PASSWORD=$(grep -E '^PASSWORD=' "$WG_ENV" | cut -d= -f2)
 echo "Endpoint: ${WG_HOST}:${WG_PORT}/udp"
 echo "Password: ${PASSWORD}"
 
+echo -e "\n\n⚠️ **IMPORTANT: Cloud Configuration Required**"
+echo "--------------------------------------------------------"
+echo "VPN Traffic Port: UDP ${WG_PORT}"
+echo "Admin UI Internal Port: HTTP ${ADMIN_PORT_INTERNAL}"
+
 case "$UI_MODE" in
-    1) echo "Admin UI: http://${PUBLIC_IP}:${ADMIN_PORT}" ;;
-    2) echo "Admin UI: http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
-    3) echo "Admin UI: $([ -n "$SSL_CERT" ] && echo "https" || echo "http")://${DOMAIN}" ;;
+    1)
+        echo -e "\nMODE 1: Direct Access (HTTP Admin UI)"
+        echo "Admin UI Access: http://${PRIVATE_IP}:${ADMIN_PORT}"
+        echo "NOTE: This mode does **NOT** provide HTTPS. Use it for testing or behind a local proxy."
+        echo "Security Group: Open TCP ${ADMIN_PORT} from source IP."
+    ;;
+    2)
+        echo -e "\nMODE 2: ALB + Route 53 (Recommended for HTTPS)"
+        echo "The Admin UI is bound to 127.0.0.1:${ADMIN_PORT_INTERNAL} (localhost)."
+        echo "NEXT STEPS (Manual AWS Configuration):"
+        echo "1. Create an ALB/Target Group (Target Port: **${ADMIN_PORT_INTERNAL}**) and register EC2 **PRIVATE IP** (${PRIVATE_IP})."
+        echo "2. Configure Route 53 **Public Hosted Zone** A-Record pointing to the ALB."
+        echo "Security Group: Open TCP 443 (from Internet to ALB) and TCP ${ADMIN_PORT_INTERNAL} (from ALB to EC2)."
+    ;;
+    3)
+        echo -e "\nMODE 3: Private ALB + Route 53 (Internal HTTPS Admin UI)"
+        echo "The Admin UI is bound to 127.0.0.1:${ADMIN_PORT_INTERNAL} (localhost)."
+        echo "NEXT STEPS (Manual AWS Configuration):"
+        echo "1. Create a **Private ALB** and Target Group (Target Port: **${ADMIN_PORT_INTERNAL}**) and register EC2 **PRIVATE IP** (${PRIVATE_IP})."
+        echo "2. Configure Route 53 **Private Hosted Zone** A-Record pointing to the Private ALB."
+        echo "Security Group: Open TCP ${ADMIN_PORT_INTERNAL} (from Private ALB to EC2)."
+    ;;
 esac
 
-echo -e "\nConfig: $WG_DIR/.env | Port: $ADMIN_PORT -> $ADMIN_PORT_INTERNAL"
-echo -e "\n\n⚠️ **IMPORTANT: Cloud Firewall / Security Group**"
-echo "You MUST open the following ports in your AWS/Cloud Security Group:"
-echo "  - **UDP ${WG_PORT}** (WireGuard VPN Traffic)"
-echo "  - **TCP ${ADMIN_PORT}** (Admin Web UI)"
-
+echo -e "\nConfig: $WG_DIR/.env\n"
 exit 0
