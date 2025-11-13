@@ -3,15 +3,15 @@
 # 🚀 WireGuard VPN Installer & Management Script (using wg-easy)
 # -----------------------------------------------------------------------------------
 # ⚙️ Compatibility:
-#   - OS Support: **Debian/Ubuntu** (22.04+ recommended).
-#   - Container Engine: **Docker** (with Compose Plugin or legacy docker-compose).
+#   - OS Support: Debian/Ubuntu (22.04+ recommended)
+#   - Requires Docker + Compose plugin
 #
-# 🛡️ Security & Access:
-#   - Admin UI Modes: **Cloud-Optimized** (Direct HTTP, Public ALB, Private ALB for HTTPS).
-#   - WireGuard Port Binding: **Dual-stack compatible** (IPv4/IPv6).
+# 🛡️ Security:
+#   - Admin UI routing modes (Direct IP / Public ALB / Private ALB)
+#   - Private-IP binding (safe by default)
 #
-# 🛠️ Maintenance & Stability:
-#   - Management: Menu for **logs**, **robust uninstallation**, and **WG_HOST update**.
+# 🛠️ Maintenance:
+#   - View logs, uninstall cleanly, update WG_HOST
 # -----------------------------------------------------------------------------------
 
 set -euo pipefail
@@ -29,7 +29,7 @@ check_pkg() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y "$1" >/dev/null 2>&1
 }
 
-# Corrected sed function (pure ASCII, safe)
+# Safe sed (delimiter = "|")
 set_port() {
     local pattern="$1"
     local replace="$2"
@@ -38,10 +38,10 @@ set_port() {
     grep -qF "$replace" "$file" && return 0
 
     if grep -qF "$pattern" "$file"; then
-        sed -i.bak "/$pattern/c\\
+        sed -i.bak "\|$pattern|c\\
 - \"$replace\"" "$file"
     else
-        sed -i.bak "/ports:/a\\
+        sed -i.bak "\|ports:|a\\
 - \"$replace\"" "$file"
     fi
 
@@ -64,8 +64,7 @@ find_compose() {
     fi
 
     command -v "${COMPOSE%% *}" >/dev/null 2>&1 || {
-        echo "Error: Docker Compose not found"
-        exit 1
+        echo "Error: Docker Compose not found"; exit 1;
     }
 }
 
@@ -147,8 +146,7 @@ if [ $WG_INSTALLED -eq 1 ]; then
             exit 0
             ;;
         *)
-            exit 0
-            ;;
+            exit 0 ;;
     esac
 fi
 
@@ -181,7 +179,7 @@ ADMIN_PORT=${ADMIN_PORT:-$ADMIN_PORT_INTERNAL}
 
 echo -e "\n------ DNS RESOLVER ------"
 echo "Choose DNS for VPN clients:"
-echo "1) System DNS (from /etc/resolv.conf)"
+echo "1) System DNS"
 echo "2) Cloudflare 1.1.1.1"
 echo "3) Google 8.8.8.8"
 echo "4) Quad9 9.9.9.9"
@@ -196,16 +194,13 @@ case $D in
     *) DNS=1.1.1.1 ;;
 esac
 
-# --- Docker Install ---
+# --- Install Docker if missing ---
 if ! command -v docker >/dev/null 2>&1; then
     echo "Installing Docker..."
 
     apt-get install -y ca-certificates curl gnupg lsb-release >/dev/null 2>&1
     install -m 0755 -d /etc/apt/keyrings
-
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-        -o /etc/apt/keyrings/docker.asc
-
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
     chmod a+r /etc/apt/keyrings/docker.asc
 
     . /etc/os-release
@@ -262,6 +257,7 @@ timeout "$TIMEOUT" $COMPOSE up -d
 
 # --- Output ---
 header "INSTALL COMPLETE"
+
 PASSWORD=$(grep -E '^PASSWORD=' "$WG_ENV" | cut -d= -f2)
 
 echo "Endpoint: ${WG_HOST}:${WG_PORT}/udp"
