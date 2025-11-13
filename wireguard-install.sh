@@ -283,9 +283,9 @@ chmod 600 .env
 
 WG_BIND_IP="0.0.0.0"
 
-# Apply configuration changes to docker-compose.yml (using fixed set_port)
-set_port "51820/udp" "$WG_BIND_IP:$WG_PORT:51820/udp" "$WG_COMPOSE"
-set_port "${ADMIN_PORT_INTERNAL}/tcp" "$BIND_IP:$ADMIN_PORT:$ADMIN_PORT_INTERNAL/tcp" "$WG_COMPOSE"
+# Always bind to 0.0.0.0 so ALB, localhost, and internal VPC can reach the Admin UI
+set_port "51820/udp" "0.0.0.0:${WG_PORT}:51820/udp" "$WG_COMPOSE"
+set_port "${ADMIN_PORT_INTERNAL}/tcp" "0.0.0.0:80:${ADMIN_PORT_INTERNAL}/tcp" "$WG_COMPOSE"
 ensure_restart "$WG_COMPOSE"
 
 echo "Starting..."
