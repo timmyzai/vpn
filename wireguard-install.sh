@@ -143,9 +143,9 @@ WG_HOST="${WG_HOST:-$PUBLIC_IP}"
 
 echo
 echo "Admin UI Exposure:"
-echo "1) Direct IP"
-echo "2) Public ALB"
-echo "3) Private ALB"
+echo "1) Direct IP (HTTP)" 
+echo "2) Public ALB + Route53 (HTTPS)" 
+echo "3) Private ALB + Route53 (HTTPS Internal - Recommended)"
 read -rp "Mode [2]: " UI_MODE
 UI_MODE=${UI_MODE:-2}
 
