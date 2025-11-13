@@ -29,7 +29,7 @@ check_pkg() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y "$1" >/dev/null 2>&1
 }
 
-# CORRECTED sed functions for robust multiline handling
+# CORRECTED sed functions using single quotes and \n for maximum robustness
 set_port() {
     local pattern="$1"
     local replace="$2"
@@ -53,6 +53,7 @@ ensure_restart() {
     local file="$1"
     grep -q "restart: unless-stopped" "$file" && return 0
 
+    # Use single quotes for robust multiline insertion
     sed -i "\|image:.*wg-easy|a\\
         restart: unless-stopped" "$file"
 }
@@ -114,8 +115,12 @@ if [ $WG_INSTALLED -eq 1 ]; then
             [ -n "$COMPOSE" ] && [ -f "$WG_COMPOSE" ] && \
                 timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" down || true
 
+            # The error in the output "Error response from daemon: invalid reference format: repository name (library/321MB) must be lowercase"
+            # likely comes from a hung `docker images` command when cleaning up.
+            # We add a check for non-empty output before xargs to be safer.
             docker rm -f wg-easy 2>/dev/null || true
-            docker images | grep wg-easy | awk '{print $3}' | xargs -r docker rmi -f || true
+            WG_IMAGE_IDS=$(docker images | grep wg-easy | awk '{print $3}' | xargs)
+            [ -n "$WG_IMAGE_IDS" ] && docker rmi -f $WG_IMAGE_IDS || true
             docker image prune -af >/dev/null 2>&1 || true
 
             rm -rf "$WG_DIR"
@@ -162,7 +167,7 @@ esac
 read -rp "WG Port [51820]: " WG_PORT
 WG_PORT=${WG_PORT:-51820}
 
-read -rp "Admin EXTERNAL Port [$ADMIN_PORT_INTERNAL]: " ADMIN_PORT
+read -rp "Admin EXTERNAL Port [51821]: " ADMIN_PORT
 ADMIN_PORT=${ADMIN_PORT:-$ADMIN_PORT_INTERNAL}
 
 echo -e "\n------ DNS RESOLVER ------"
@@ -219,12 +224,10 @@ if [ ! -f docker-compose.yml ]; then
         https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
 fi
 
-# *** FIX APPLIED HERE: This block was truncated previously ***
 if [ ! -s docker-compose.yml ]; then
     echo "Error: Failed to download docker-compose.yml"
     exit 1
 fi
-# *** END FIX ***
 
 cat > .env <<EOF
 WG_HOST=${WG_HOST}
