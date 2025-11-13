@@ -14,227 +14,298 @@
 #   - View logs, uninstall cleanly, update WG_HOST
 # -----------------------------------------------------------------------------------
 
-#!/bin/bash
 set -euo pipefail
 
-WG_DIR="/etc/docker/containers/wg-easy"
-WG_ENV="$WG_DIR/.env"
-WG_COMPOSE="$WG_DIR/docker-compose.yml"
-ADMIN_PORT_INTERNAL=51821
-TIMEOUT=30
+# --- Config ---
+readonly WG_DIR="/etc/docker/containers/wg-easy"
+readonly WG_ENV="$WG_DIR/.env"
+readonly WG_COMPOSE="$WG_DIR/docker-compose.yml"
+readonly ADMIN_PORT_INTERNAL=51821
+readonly TIMEOUT=30
+
+# --- Functions ---
+check_pkg() {
+    command -v "$1" >/dev/null 2>&1 || \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "$1" >/dev/null 2>&1
+}
+
+# FIX: Corrected YAML indentation (6 spaces) in awk blocks for robust ports file modification
+set_port() {
+    local pattern="$1"
+    local replace="$2"
+    local file="$3"
+    local INDENT="      " # 6 spaces for YAML list item indentation
+
+    # If the exact replace line already exists, skip
+    grep -qF "$replace" "$file" && return 0
+
+    # First: try to replace an existing matching port line
+    awk -v pat="$pattern" -v rep="${INDENT}- \""$replace"\"" '
+        {
+            if (index($0, pat) > 0) {
+                # Ensure replacement line has proper indentation
+                print rep
+                replaced=1
+            } else {
+                print
+            }
+        }
+        END {
+            if (replaced != 1)
+                print "__NO_MATCH_FOUND__"
+        }
+    ' "$file" > "${file}.tmp"
+
+    # If no match was found, insert under `ports:`
+    if grep -q "__NO_MATCH_FOUND__" "${file}.tmp"; then
+        awk -v rep="${INDENT}- \""$replace"\"" '
+            {
+                if ($0 ~ /ports:/) {
+                    # Insert new line with proper indentation right after 'ports:'
+                    print
+                    print rep
+                } else {
+                    print
+                }
+            }
+        ' "${file}.tmp" | grep -v "__NO_MATCH_FOUND__" > "${file}.patched"
+    else
+        mv "${file}.tmp" "${file}.patched"
+    fi
+
+    mv "${file}.patched" "$file"
+    rm -f "${file}.tmp" 2>/dev/null || true
+}
+
+ensure_restart() {
+    local file="$1"
+    grep -q "restart: unless-stopped" "$file" && return 0
+
+    # Ensure correct 4-space YAML indentation for 'restart' under the service
+    sed -i "\|image:.*wg-easy|a\\
+    \    restart: unless-stopped" "$file"
+}
+
+find_compose() {
+    if docker compose version >/dev/null 2>&1; then
+        COMPOSE="docker compose"
+    else
+        COMPOSE="docker-compose"
+    fi
+
+    command -v "${COMPOSE%% *}" >/dev/null 2>&1 || {
+        echo "Error: Docker Compose not found"; exit 1;
+    }
+}
 
 header() { echo -e "\n=== $1 ===\n"; }
 
-require_root() {
-    if [ "$EUID" -ne 0 ]; then
-        echo "Please run as root"
-        exit 1
-    fi
+get_ip() {
+    local ip
+    ip=$(timeout 5 curl -s ifconfig.me 2>/dev/null || echo "")
+    [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "$ip" || echo "$1"
 }
 
-require_ubuntu() {
-    if [ ! -e /etc/debian_version ]; then
-        echo "This installer supports Ubuntu/Debian only"
-        exit 1
-    fi
-}
+# --- Checks ---
+[ "$EUID" -ne 0 ] && { echo "Run as root"; exit 1; }
+[ ! -e /etc/debian_version ] && { echo "Debian/Ubuntu only"; exit 1; }
 
-install_docker() {
-    if command -v docker >/dev/null 2>&1; then
-        return
-    fi
+apt-get update -y >/dev/null 2>&1
+check_pkg curl
 
-    echo "Installing Docker..."
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y ca-certificates curl gnupg lsb-release >/dev/null 2>&1
+PRIVATE_IP=$(hostname -I | awk '{print $1}')
+PUBLIC_IP=$(get_ip "$PRIVATE_IP")
 
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-    chmod a+r /etc/apt/keyrings/docker.asc
+if command -v docker >/dev/null 2>&1; then
+    find_compose
+else
+    COMPOSE=""
+fi
 
-    . /etc/os-release
-    echo \
-"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" \
-> /etc/apt/sources.list.d/docker.list
+# --- Detect Existing Installation ---
+WG_INSTALLED=0
+docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^wg-easy$' && WG_INSTALLED=1
+[ $WG_INSTALLED -eq 0 ] && [ -f "$WG_COMPOSE" ] && WG_INSTALLED=1
+[ $WG_INSTALLED -eq 0 ] && [ -d "$WG_DIR" ] && WG_INSTALLED=1
 
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
-
-    systemctl enable --now docker
-}
-
-ensure_docker_compose() {
-    if ! docker compose version >/dev/null 2>&1; then
-        echo "docker compose plugin is missing"
-        exit 1
-    fi
-}
-
-clean_uninstall() {
-    echo "Uninstalling wg-easy..."
-
-    docker compose -f "$WG_COMPOSE" down || true
-    docker rm -f wg-easy 2>/dev/null || true
-
-    docker images --format "{{.Repository}} {{.ID}}" \
-        | awk '$1=="ghcr.io/wg-easy/wg-easy"{print $2}' \
-        | xargs -r docker rmi -f >/dev/null 2>&1 || true
-
-    rm -rf "$WG_DIR"
-
-    echo "✓ Uninstalled cleanly"
-    exit 0
-}
-
-detect_existing() {
-    if docker ps -a --format '{{.Names}}' | grep -q '^wg-easy$'; then return 0; fi
-    if [ -d "$WG_DIR" ]; then return 0; fi
-    return 1
-}
-
-show_existing_menu() {
+if [ $WG_INSTALLED -eq 1 ]; then
     header "WG-EASY DETECTED"
     echo "1) View Logs"
     echo "2) Uninstall Completely"
     echo "3) Change WG_HOST"
     echo "4) Exit"
-    read -rp "Choice [1-4]: " c
+    read -rp "Choice [1-4]: " choice
 
-    case "$c" in
+    case "$choice" in
         1)
-            docker logs wg-easy -f --tail 50
+            docker logs wg-easy --tail 50 -f || true
             exit 0
             ;;
         2)
-            read -rp "Confirm uninstall? (y/N): " u
-            [[ "$u" =~ ^[yY]$ ]] || exit 0
-            clean_uninstall
+            read -rp "Confirm uninstall? (y/N): " c
+            [[ "$c" =~ ^[yY]$ ]] || exit 0
+
+            # Use -f explicitly to ensure the script finds the file in the correct path
+            if [ -n "$COMPOSE" ] && [ -f "$WG_COMPOSE" ]; then
+                timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" down || true
+            fi
+
+            docker rm -f wg-easy 2>/dev/null || true
+
+            WG_IMAGE_IDS=$(docker images --format "{{.Repository}} {{.ID}}" \
+                | awk '$1=="ghcr.io/wg-easy/wg-easy"{print $2}')
+
+            if [ -n "$WG_IMAGE_IDS" ]; then
+                docker rmi -f $WG_IMAGE_IDS || true
+            fi
+
+            docker image prune -af >/dev/null 2>&1 || true
+            rm -rf "$WG_DIR"
+
+            echo "✓ Uninstalled"
+            exit 0
             ;;
         3)
-            read -rp "New WG_HOST: " NEW
-            sed -i "s|^WG_HOST=.*|WG_HOST=$NEW|" "$WG_ENV"
-            docker compose -f "$WG_COMPOSE" down
-            docker compose -f "$WG_COMPOSE" up -d
+            read -rp "New WG_HOST: " new_host
+            [ -z "$new_host" ] && exit 0
+
+            # Use '#' delimiter for sed to be safe
+            sed -i "s#^WG_HOST=.*#WG_HOST=${new_host}#" "$WG_ENV"
+            timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" down || true
+            timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" up -d
+
             echo "✓ WG_HOST updated"
             exit 0
             ;;
         *)
-            exit 0
-            ;;
+            exit 0 ;;
     esac
-}
+fi
 
-safe_replace_port_line() {
-    local OLD="$1"
-    local NEW="$2"
-    local FILE="$3"
+# --- New Install ---
+header "WIREGUARD INSTALLER"
+echo "Private: $PRIVATE_IP"
+echo "Public : $PUBLIC_IP"
 
-    # remove old line entirely (safe)
-    sed -i "\|$OLD|d" "$FILE"
+read -rp "WG_HOST [$PUBLIC_IP]: " WG_HOST
+WG_HOST="${WG_HOST:-$PUBLIC_IP}"
 
-    # insert under ports:
-    awk -v newline="$NEW" '
-        /ports:/ {
-            print
-            print "        - \"" newline "\""
-            next
-        }
-        { print }
-    ' "$FILE" > "${FILE}.tmp" && mv "${FILE}.tmp" "$FILE"
-}
+echo
+echo "Admin UI Exposure:"
+echo "1) Direct IP (HTTP) - Binds to Private IP"
+echo "2) Public ALB + Route53 (HTTPS) - Binds to Private IP"
+echo "3) Private ALB + Route53 (HTTPS Internal - Recommended) - Binds to Private IP"
+read -rp "Mode [3]: " UI_MODE
+UI_MODE=${UI_MODE:-3}
 
-install_new() {
-    header "WIREGUARD INSTALLER"
+case "$UI_MODE" in
+    1|2|3) BIND_IP="$PRIVATE_IP" ;;
+    *) echo "Invalid UI Mode"; exit 1 ;;
+esac
 
-    PRIVATE_IP=$(hostname -I | awk '{print $1}')
-    PUBLIC_IP=$(curl -s ifconfig.me || echo "$PRIVATE_IP")
+read -rp "WG Port [51820]: " WG_PORT
+WG_PORT=${WG_PORT:-51820}
 
-    echo "Private: $PRIVATE_IP"
-    echo "Public : $PUBLIC_IP"
-    read -rp "WG_HOST [$PUBLIC_IP]: " WG_HOST
-    WG_HOST=${WG_HOST:-$PUBLIC_IP}
+read -rp "Admin EXTERNAL Port [51821]: " ADMIN_PORT
+ADMIN_PORT=${ADMIN_PORT:-$ADMIN_PORT_INTERNAL}
 
-    echo
-    echo "Admin UI Exposure:"
-    echo "1) Direct IP (HTTP)"
-    echo "2) Public ALB + Route53 (HTTPS)"
-    echo "3) Private ALB + Route53 (HTTPS Internal - Recommended)"
-    read -rp "Mode [3]: " M
-    M=${M:-3}
+echo -e "\n------ DNS RESOLVER ------"
+echo "Choose DNS for VPN clients:"
+echo "1) System DNS (from /etc/resolv.conf)"
+echo "2) Cloudflare 1.1.1.1"
+echo "3) Google 8.8.8.8"
+echo "4) Quad9 9.9.9.9"
+read -rp "DNS [1-4]: " D
+D=${D:-1}
 
-    BIND_IP="$PRIVATE_IP"
+# FIX: Extracts the DNS IP address to avoid sed errors with /etc/resolv.conf path
+case $D in
+    1) DNS=$(awk '/nameserver/{print $2;exit}' /etc/resolv.conf || echo "1.1.1.1") ;;
+    2) DNS=1.1.1.1 ;;
+    3) DNS=8.8.8.8 ;;
+    4) DNS=9.9.9.9 ;;
+    *) DNS=1.1.1.1 ;;
+esac
 
-    read -rp "WG Port [51820]: " WG_PORT
-    WG_PORT=${WG_PORT:-51820}
+# --- Install Docker if missing ---
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Installing Docker..."
 
-    read -rp "Admin EXTERNAL Port [51821]: " ADMIN_PORT
-    ADMIN_PORT=${ADMIN_PORT:-51821}
+    apt-get install -y ca-certificates curl gnupg lsb-release >/dev/null 2>&1
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
 
-    echo
-    echo "--- DNS Selection ---"
-    echo "1) System DNS"
-    echo "2) Cloudflare"
-    echo "3) Google"
-    echo "4) Quad9"
-    read -rp "DNS [1-4]: " D
-    D=${D:-1}
+    . /etc/os-release
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list
 
-    case "$D" in
-        1) DNS=$(awk '/nameserver/{print $2;exit}' /etc/resolv.conf || echo "1.1.1.1") ;;
-        2) DNS=1.1.1.1 ;;
-        3) DNS=8.8.8.8 ;;
-        4) DNS=9.9.9.9 ;;
-        *) DNS=1.1.1.1 ;;
-    esac
+    apt-get update -y >/dev/null 2>&1
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
 
-    mkdir -p "$WG_DIR"
-    cd "$WG_DIR"
+    systemctl enable --now docker
 
+    for i in {1..5}; do
+        if find_compose 2>/dev/null; then break; fi
+        sleep 1
+    done
+
+    echo "✓ Docker installed"
+fi
+
+# --- Setup ---
+mkdir -p "$WG_DIR"
+cd "$WG_DIR"
+
+# Download the base compose file
+if [ ! -f docker-compose.yml ]; then
     curl -fsSL -o docker-compose.yml \
         https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
+fi
 
-    cat > "$WG_ENV" <<EOF
-WG_HOST=$WG_HOST
+if [ ! -s docker-compose.yml ]; then
+    echo "Error: Failed to download docker-compose.yml"
+    exit 1
+fi
+
+# Create .env file
+cat > .env <<EOF
+WG_HOST=${WG_HOST}
 PASSWORD=$(openssl rand -hex 16)
-WG_PORT=$WG_PORT
-PORT=$ADMIN_PORT_INTERNAL
-WG_DEFAULT_DNS=$DNS
+WG_PORT=${WG_PORT}
+PORT=${ADMIN_PORT_INTERNAL}
+WG_DEFAULT_DNS=${DNS}
 WG_ALLOWED_IPS=0.0.0.0/0,::/0
 EOF
 
-    chmod 600 "$WG_ENV"
+chmod 600 .env
 
-    # Fix ports safely (no YAML corruption)
-    safe_replace_port_line "51820:51820/udp" "0.0.0.0:$WG_PORT:51820/udp" "$WG_COMPOSE"
-    safe_replace_port_line "51821:51821/tcp" "$BIND_IP:$ADMIN_PORT:51821/tcp" "$WG_COMPOSE"
+WG_BIND_IP="0.0.0.0"
 
-    # Ensure restart
-    if ! grep -q "restart: unless-stopped" "$WG_COMPOSE"; then
-        sed -i '/container_name: wg-easy/a\    restart: unless-stopped' "$WG_COMPOSE"
-    fi
+# Apply configuration changes to docker-compose.yml (using fixed set_port)
+set_port "51820/udp" "$WG_BIND_IP:$WG_PORT:51820/udp" "$WG_COMPOSE"
+set_port "${ADMIN_PORT_INTERNAL}/tcp" "$BIND_IP:$ADMIN_PORT:$ADMIN_PORT_INTERNAL/tcp" "$WG_COMPOSE"
+ensure_restart "$WG_COMPOSE"
 
-    echo "Starting..."
-    docker compose -f "$WG_COMPOSE" up -d
+echo "Starting..."
+timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" up -d
 
-    header "INSTALL COMPLETE"
-    PASS=$(grep PASSWORD "$WG_ENV" | cut -d= -f2)
+# --- Output ---
+header "INSTALL COMPLETE"
 
-    echo "WG Endpoint : $WG_HOST:$WG_PORT"
-    echo "Admin UI    : http://$PRIVATE_IP:$ADMIN_PORT"
-    echo "Password    : $PASS"
-}
+PASSWORD=$(grep -E '^PASSWORD=' "$WG_ENV" | cut -d= -f2)
 
-# -------------------------------------------------------------------
-# Main Flow
-# -------------------------------------------------------------------
-require_root
-require_ubuntu
-install_docker
-ensure_docker_compose
+echo "Endpoint: ${WG_HOST}:${WG_PORT}/udp"
+echo "Password: $PASSWORD"
+echo
+echo "Admin UI:"
+case "$UI_MODE" in
+    1) echo "http://${PRIVATE_IP}:${ADMIN_PORT} (Direct Access)" ;;
+    2) echo "Via PUBLIC ALB (HTTPS). Target: http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
+    3) echo "Via PRIVATE ALB (HTTPS internal) - Recommended. Target: http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
+esac
 
-if detect_existing; then
-    show_existing_menu
-else
-    install_new
-fi
+echo
+echo "Config: $WG_DIR/.env"
+exit 0
