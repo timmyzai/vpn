@@ -1,216 +1,192 @@
-# WireGuard VPN Installer (wg-easy) — Universal Automated Installer
-
-A **universal, fully automated WireGuard VPN installer** using **wg-easy**, supporting:
-
-* Ubuntu / Debian
-* CentOS / RHEL / Rocky / AlmaLinux
-* Fedora
-* Amazon Linux 2
-* Amazon Linux 2023
-* ARM64 & x86_64
+# ⭐ **WireGuard Installer & Management Script**
 
 ---
 
-## 🚀 Features
+# 🚀 **Overview**
+
+A **universal, production-safe WireGuard VPN installer** powered by **wg-easy**, supporting all major Linux distributions and both x86_64 and ARM64.
+Includes automated Docker setup, YAML patching, persistent config, healthcheck insertion, and ALB-friendly routing modes.
+
+Designed for reliability, safety, and consistent behavior across environments.
+
+---
+
+# 🧪 **Tested Environment**
+
+✔ **Ubuntu 24.04 ARM64**
+✔ Works with **Public ALB (HTTPS → Private IP)**
+✔ Works with **Private ALB (Internal HTTPS)**
+
+⚠ Direct IP mode is *supported* but **not officially tested yet**.
+
+---
+
+# ⚙️ **Universal OS Compatibility**
+
+**Supported Linux families:**
+
+• Ubuntu 20.04 / 22.04 / 24.04
+• Debian 10 / 11 / 12
+• CentOS 7
+• RHEL 7 / 8 / 9
+• Rocky Linux 8 / 9
+• AlmaLinux 8 / 9
+• Fedora 34–40
+• Amazon Linux 2
+• Amazon Linux 2023
+
+**Architectures:**
+• x86_64
+• ARM64
+
+---
+
+# 🔧 **Key Features**
 
 ### ✔ Fully Automated Installation
 
-* Auto-installs Docker + Docker Compose Plugin
-* Auto-downloads wg-easy
-* Auto-patches docker-compose.yaml safely
-* Auto-configures ports based on your input
-* Auto-enables IP forwarding (sysctl persistent)
-* Auto-detects OS and applies correct install logic
+• Detects OS & architecture automatically
+• Auto-installs Docker & Docker Compose
+• Enables persistent IP forwarding
+• Downloads and configures wg-easy
+• Safe, idempotent re-run behavior
 
 ### ✔ Admin UI Routing Modes
 
-* Direct IP (HTTP)
-* Public ALB (HTTPS → Private IP)
-* Private ALB (Internal HTTPS → Private IP)
+• Direct IP (HTTP)
+• Public ALB → Private Node (HTTPS)
+• Private ALB → Private Node (Internal HTTPS)
+
+### ✔ Production-Safe Defaults
+
+• restart: unless-stopped
+• Auto-injected healthcheck
+• No hard-coded credentials
+• Secure .env handling (600 permissions)
+
+### ✔ YAML Auto-Patching
+
+• WireGuard UDP port changes
+• Admin UI port changes
+• Automatic healthcheck block
+• Automatic restart policy
 
 ### ✔ Zero-Password First Login
 
-wg-easy will **ask to create an admin account** on first login.
-
-### ✔ Healthcheck Included
-
-A built-in `HTTP /health` endpoint ensures:
-
-* ALB/NLB perform health checks correctly
-* Docker automatically restarts on failure
-
-### ✔ Idempotent
-
-Re-running the script:
-
-* Never breaks existing config
-* Re-patches ports cleanly
-* Ensures Docker is installed and running
+Admin credentials created on first visit.
 
 ### ✔ Maintenance Menu
 
-When already installed:
-
-```
-1) View Logs
-2) Uninstall Completely
-3) Change WG_HOST
-4) Exit
-```
+• View logs
+• Uninstall completely
+• Change WG_HOST
+• Exit
 
 ---
 
-## 📦 Supported Operating Systems
+# 📥 **Installation Flow**
 
-| OS                | Version       | Status    |
-| ----------------- | ------------- | --------- |
-| Ubuntu            | 20.04, 22.04+ | Supported |
-| Debian            | 10, 11, 12    | Supported |
-| CentOS            | 7             | Supported |
-| RHEL              | 7, 8, 9       | Supported |
-| Rocky Linux       | 8, 9          | Supported |
-| AlmaLinux         | 8, 9          | Supported |
-| Fedora            | 34–40         | Supported |
-| Amazon Linux 2    | Latest        | Supported |
-| Amazon Linux 2023 | Latest        | Supported |
+The installer performs the following automatically:
 
----
-
-## 📥 Installation
-
-Run as regular user or root — script auto-elevates using sudo.
-
-```bash
-curl -o wireguard-install.sh https://raw.githubusercontent.com/YOUR_GITHUB_REPO/wireguard-install.sh
-chmod +x wireguard-install.sh
-./wireguard-install.sh
-```
-
-The script will:
-
-1. Detect your OS
-2. Install Docker
-3. Install Docker Compose Plugin
-4. Configure sysctl IP forwarding
-5. Download wg-easy
-6. Patch compose file
-7. Start wg-easy
+1. Detect OS + architecture
+2. Install Docker + Compose plugin
+3. Enable sysctl IP forwarding
+4. Create persistent wg-easy folder
+5. Download latest docker-compose.yml
+6. Create .env config file
+7. Patch ports and healthcheck
+8. Start WireGuard service
+9. Display WG endpoint + Admin URL
 
 ---
 
-## ⚙ Configuration Prompts
+# ⚙️ **Configuration Prompts**
 
-Example:
+You will be asked for:
 
-```
-Private: 172.31.24.10
-Public : 18.144.19.120
+• WG_HOST
+• Admin UI routing mode (Direct, Public ALB, Private ALB)
+• WireGuard UDP port
+• Admin UI port
+• DNS resolver for VPN clients
 
-WG_HOST [18.144.19.120]:
+DNS Options:
 
-Admin UI Exposure:
-1) Direct IP (HTTP)
-2) Public ALB + Route53 (HTTPS)
-3) Private ALB + Route53 (Internal)
-Mode [3]:
-
-WG Port [51820]:
-Admin EXTERNAL Port [80]:
-
------- DNS RESOLVER ------
-1) AWS VPC DNS
-2) Cloudflare 1.1.1.1
-3) Google 8.8.8.8
-4) Quad9 9.9.9.9
-DNS [1-4]:
-```
+1. AWS VPC DNS
+2. Cloudflare
+3. Google
+4. Quad9
 
 ---
 
-## 📄 Completion Output
+# 📄 **Completion Summary**
 
-```
-=== INSTALL COMPLETE ===
+Example final output:
 
-Endpoint: WG_HOST:WG_PORT/udp
-
+Endpoint: `WG_HOST:WG_PORT/udp`
 Admin UI:
-http://PRIVATE_IP:PORT
+• Direct IP → http://PRIVATE_IP:PORT
+• Public ALB → HTTPS → http://PRIVATE_IP:PORT
+• Private ALB → Internal HTTPS → http://PRIVATE_IP:PORT
 
-Config stored in: /etc/docker/containers/wg-easy/.env
+Config directory:
+`/etc/docker/containers/wg-easy/.env`
 
-⚠️ On first login, wg-easy will prompt you to create an ADMIN user/password.
-```
-
----
-
-## 🔥 Security Notes
-
-* Admin UI runs HTTP internally
-* For HTTPS, place behind ALB/NLB + ACM SSL
-* DNS defaults to AWS VPC DNS when inside EC2
-* WG_HOST updates restart the service automatically
+First login: system will ask you to create the admin account.
 
 ---
 
-## 🔧 Uninstallation
+# 🔥 **Security Notes**
 
-Run the script again:
-
-```bash
-./wireguard-install.sh
-```
-
-Choose:
-
-```
-2) Uninstall Completely
-```
-
-This removes:
-
-* docker container
-* docker image
-* wg-easy config folder
-* patched compose files
+• Admin UI is HTTP internally (use ALB/NLB + ACM for HTTPS)
+• DNS defaults to AWS VPC DNS for EC2 deployments
+• WG_HOST updates safely restart wg-easy
+• No passwords stored in script or .env
 
 ---
 
-## 🔍 Troubleshooting
+# 🗑️ **Uninstallation**
 
-### Client connects but no Internet
+Re-run installer and select:
+**Uninstall Completely**
 
-Enable NAT/masquerade:
+Removes:
+• Docker container
+• Docker image
+• wg-easy compose/YAML
+• Persistent config folder
 
-```bash
-firewall-cmd --add-masquerade --permanent
-firewall-cmd --reload
-```
+---
 
-### ALB marks target as unhealthy
+# 🧰 **Troubleshooting Guide**
 
-```bash
-curl http://localhost:51821/health
-```
+**ALB Unhealthy:**
+Check: [http://localhost:51821/health](http://localhost:51821/health)
 
-### Docker not running
+**Client has no internet:**
+Check NAT/firewalld rules (not configured in Option A)
 
-```bash
+**Docker failed to start:**
 systemctl restart docker
-```
 
 ---
 
-## 🤝 Contributing
+# 🤝 **Contributing**
 
-PRs welcome:
+Pull requests welcome for:
 
-* Cross-distro enhancements
-* YAML patch optimizations
-* Security improvements
+• Additional OS refinements
+• Docker repo improvements
+• YAML patch optimizations
+• Architecture-specific enhancements
+• NAT/firewall add-on modules
 
 ---
 
-## 📜 License
+# 📜 **License**
 
 MIT License
+© Timmy Chin Did Choong
+
+---
+
