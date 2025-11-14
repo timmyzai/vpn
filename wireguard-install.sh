@@ -191,6 +191,58 @@ install_docker() {
 }
 
 # ============================================================
+# CLOUD CIDR AUTO-DETECTION
+# ============================================================
+
+get_cidr_by_cloud() {
+    case "$1" in
+        aws)
+            TOKEN=$(curl -s --max-time 1 -X PUT \
+                "http://169.254.169.254/latest/api/token" \
+                -H "X-aws-ec2-metadata-token-ttl-seconds: 300" || true)
+
+            MAC=$(curl -s --max-time 1 -H "X-aws-ec2-metadata-token: $TOKEN" \
+                http://169.254.169.254/latest/meta-data/network/interfaces/macs/ | head -n 1)
+
+            if [[ -n "$MAC" ]]; then
+                WG_VPC_CIDR=$(curl -s --max-time 1 \
+                    -H "X-aws-ec2-metadata-token: $TOKEN" \
+                    http://169.254.169.254/latest/meta-data/network/interfaces/macs/${MAC}vpc-ipv4-cidr-block)
+            fi
+            ;;
+
+        gcp)
+            IP=$(curl -s --max-time 1 -H "Metadata-Flavor: Google" \
+                "http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/ip")
+
+            MASK=$(curl -s --max-time 1 -H "Metadata-Flavor: Google" \
+                "http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/subnetmask")
+
+            if [[ -n "$IP" && -n "$MASK" ]]; then
+                WG_VPC_CIDR=$(ipcalc -n "$IP" "$MASK" | awk '/Network/ {print $2}')
+            fi
+            ;;
+
+        azure)
+            NET=$(curl -s --max-time 1 -H Metadata:true \
+                "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/subnet/0/address?api-version=2021-02-01")
+
+            PREFIX=$(curl -s --max-time 1 -H Metadata:true \
+                "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/subnet/0/prefix?api-version=2021-02-01")
+
+            [[ -n "$NET" && -n "$PREFIX" ]] && WG_VPC_CIDR="$NET/$PREFIX"
+            ;;
+
+        local)
+            IFACE=$(ip route show default | awk '{print $5}')
+            WG_VPC_CIDR=$(ip -4 addr show "$IFACE" | awk '/inet / {print $2}')
+            ;;
+    esac
+
+    [[ -z "$WG_VPC_CIDR" ]] && return 1 || return 0
+}
+
+# ============================================================
 # INSTALLATION PROCESS
 # ============================================================
 
@@ -214,64 +266,82 @@ read -rp "Admin EXTERNAL Port [80]: " ADMIN_PORT
 ADMIN_PORT="${ADMIN_PORT:-80}"
 
 echo
-echo "What DNS resolvers do you want to use with the VPN?"
-echo "    1) Current system resolvers (from /etc/resolv.conf)"
-echo "    2) Self-hosted DNS Resolver (Unbound) - Needs manual setup later"
-echo "    3) Cloudflare (Anycast: worldwide, 1.1.1.1)"
-echo "    4) Quad9 (Anycast: worldwide, Security: 9.9.9.9)"
-echo "    5) Quad9 uncensored (Anycast: worldwide, Unfiltered: 9.9.9.10)"
-echo "    6) FDN (France, Privacy-focused: 80.67.169.12)"
-echo "    7) DNS.WATCH (Germany, Unfiltered/No-logging: 84.200.69.80)"
-echo "    8) OpenDNS (Anycast: worldwide, Security/Parental Control: 208.67.222.222)"
-echo "    9) Google (Anycast: worldwide, 8.8.8.8)"
-echo "    10) Yandex Basic (Russia, 77.88.8.8)"
-echo "    11) AdGuard DNS (Anycast: worldwide, Ad-blocking: 94.140.14.14)"
-echo "    12) NextDNS (Customizable filtering) - Not supported by single IP"
-echo "    13) Custom"
+echo "Select DNS / Network Mode:"
+echo "    1) Connect to Cloud VPC / Local Network"
+echo "    2) System resolvers (/etc/resolv.conf)"
+echo "    3) Unbound (127.0.0.1)"
+echo "    4) Cloudflare"
+echo "    5) Google"
+echo "    6) Quad9 Secure"
+echo "    7) Quad9 Unfiltered"
+echo "    8) FDN"
+echo "    9) DNS.WATCH"
+echo "   10) OpenDNS"
+echo "   11) Yandex"
+echo "   12) AdGuard"
+echo "   13) NextDNS"
+echo "   14) Custom"
 echo
 
 DEFAULT_DNSC=1
 DNSC=""
 
-# Input reading loop and validation for options 1–13
 while true; do
-    read -rp "DNS [1-13] (default: $DEFAULT_DNSC): " DNSC
-
-    # If empty input → use default
-    if [[ -z "$DNSC" ]]; then
-        DNSC="$DEFAULT_DNSC"
-    fi
-
-    # Validation
-    if [[ "$DNSC" =~ ^[0-9]+$ ]] && [ "$DNSC" -ge 1 ] && [ "$DNSC" -le 13 ]; then
-        break
-    else
-        echo "❌ Invalid selection. Please choose between 1–13."
-    fi
+    read -rp "DNS [1-14] (default: $DEFAULT_DNSC): " DNSC
+    [[ -z "$DNSC" ]] && DNSC="$DEFAULT_DNSC"
+    [[ "$DNSC" =~ ^[0-9]+$ && "$DNSC" -ge 1 && "$DNSC" -le 14 ]] && break
+    echo "❌ Invalid selection."
 done
 
-# Assign the DNS variable
 case "$DNSC" in
-    1) DNS=$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf) ;;
-    2) DNS="127.0.0.1" ;;
-    3) DNS="1.1.1.1" ;;
-    4) DNS="9.9.9.9" ;;
-    5) DNS="9.9.9.10" ;;
-    6) DNS="80.67.169.12" ;;
-    7) DNS="84.200.69.80" ;;
-    8) DNS="208.67.222.222" ;;
-    9) DNS="8.8.8.8" ;;
-    10) DNS="77.88.8.8" ;;
-    11) DNS="94.140.14.14" ;;
-    12) DNS="8.8.8.8" ;;
-    13)
-        read -rp "Enter Custom Primary DNS IP: " CUSTOM_DNS
-        DNS="${CUSTOM_DNS:-8.8.8.8}"
+    1)
+        echo
+        echo "Select Cloud Provider:"
+        echo "    a) AWS"
+        echo "    b) Google Cloud"
+        echo "    c) Azure"
+        echo "    d) Local / On-Prem"
+        echo
+
+        while true; do
+            read -rp "Provider [a-d]: " CLOUD
+            case "$CLOUD" in
+                a) PROVIDER="aws"; break ;;
+                b) PROVIDER="gcp"; break ;;
+                c) PROVIDER="azure"; break ;;
+                d) PROVIDER="local"; break ;;
+                *) echo "Invalid. Enter a–d." ;;
+            esac
+        done
+
+        echo "Fetching CIDR for $PROVIDER..."
+
+        if get_cidr_by_cloud "$PROVIDER"; then
+            DNS="AmazonProvidedDNS"
+            AUTO_VPC="yes"
+            echo "CIDR detected: $WG_VPC_CIDR"
+        else
+            echo "Failed. Using fallback DNS."
+            DNS="8.8.8.8"
+        fi
         ;;
-    *) DNS="1.1.1.1" ;;
+
+    2) DNS=$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf) ;;
+    3) DNS="127.0.0.1" ;;
+    4) DNS="1.1.1.1" ;;
+    5) DNS="8.8.8.8" ;;
+    6) DNS="9.9.9.9" ;;
+    7) DNS="9.9.9.10" ;;
+    8) DNS="80.67.169.12" ;;
+    9) DNS="84.200.69.80" ;;
+    10) DNS="208.67.222.222" ;;
+    11) DNS="77.88.8.8" ;;
+    12) DNS="94.140.14.14" ;;
+    13) DNS="8.8.8.8" ;;
+    14) read -rp "Custom DNS: " DNS ;;
 esac
 
-# Docker installation
+# Install docker if needed
 if ! command -v docker >/dev/null; then
     install_docker
 fi
@@ -279,16 +349,15 @@ fi
 find_compose
 ensure_sysctl
 
-# Installation directory
+# Install directory
 mkdir -p /etc/docker/containers/wg-easy
 cd /etc/docker/containers/wg-easy
 
-# === Generate and store password in a variable ===
+# Generate admin password
 WG_PASSWORD=$(openssl rand -base64 16)
-# ======================================================
 
 # ------------------------------------------------------------
-# Write our own clean, stable docker-compose.yml
+# docker-compose.yml
 # ------------------------------------------------------------
 cat > docker-compose.yml <<EOF
 services:
@@ -297,15 +366,13 @@ services:
     container_name: wg-easy
 
     environment:
-      # --- Unattended Setup (only works on FIRST START) ---
       - INIT_ENABLED=true
       - INIT_USERNAME=admin
-      - INIT_PASSWORD=${WG_PASSWORD} # <-- NOW USING THE VARIABLE
+      - INIT_PASSWORD=${WG_PASSWORD}
       - INIT_HOST=${HOST}
       - INIT_PORT=${WG_PORT}
       - INIT_DNS=${DNS}
 
-      # --- Normal runtime values (for UI + client config) ---
       - WG_HOST=${HOST}
       - WG_PORT=${WG_PORT}
       - PORT=51821
@@ -339,24 +406,21 @@ EOF
 header "Starting wg-easy"
 $COMPOSE up -d
 
+# ------------------------------------------------------------
+# DONE
+# ------------------------------------------------------------
 echo
 echo "=== INSTALL COMPLETE ==="
 echo "WireGuard Endpoint: ${HOST}:${WG_PORT}"
 echo "Admin UI: http://${PRIVATE_IP}:${ADMIN_PORT}"
-# === Print the password here ===
 echo "Admin User: admin"
-echo -e "Admin Password: \033[1m${WG_PASSWORD}\033[0m" # Bold the password for visibility
-# ===================================
+echo -e "Admin Password: \033[1m${WG_PASSWORD}\033[0m"
 
-# ------------------------------------------------------------
-# ALB Health Check Recommendation
-# ------------------------------------------------------------
-echo "Protocol: HTTP"
-echo "Port: 51821"
+echo
+echo "ALB Health Check:"
 echo "Path: /login"
-echo "Success codes: 200"
-echo "Healthy threshold: 2"
-echo "Unhealthy threshold: 5"
-echo "Timeout: 5 seconds"
-echo "Interval: 10–30 seconds"
+echo "Port: 51821"
+echo "Codes: 200"
+echo
+
 exit 0
