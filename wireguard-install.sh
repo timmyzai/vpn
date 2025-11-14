@@ -58,8 +58,6 @@
 #
 # USE THIS SCRIPT ENTIRELY AT YOUR OWN RISK.
 # ------------------------------------------------------------
-
-
 set -euo pipefail
 
 readonly WG_DIR="/etc/docker/containers/wg-easy"
@@ -67,7 +65,32 @@ readonly WG_ENV="$WG_DIR/.env"
 readonly WG_COMPOSE="$WG_DIR/docker-compose.yml"
 readonly ADMIN_PORT_INTERNAL=51821
 readonly TIMEOUT=30
-readonly AWS_VPC_DNS="169.254.169.253"
+
+# ------------------------------------------------------------
+#  AUTO-DETECT AWS VPC DNS
+# ------------------------------------------------------------
+
+detect_vpc_dns() {
+    # Get MAC of primary interface (usually eth0)
+    local mac
+    mac=$(cat /sys/class/net/eth0/address)
+
+    # Query AWS metadata for VPC CIDR
+    local cidr
+    cidr=$(curl -s http://169.254.169.254/latest/meta-data/network/interfaces/macs/${mac}/vpc-ipv4-cidr-block || true)
+
+    if [[ -z "$cidr" ]]; then
+        echo "ERROR: Unable to detect VPC CIDR from AWS metadata." >&2
+        exit 1
+    fi
+
+    # Extract first 3 octets (VPC base)
+    local base
+    base=$(echo "$cidr" | cut -d'.' -f1-3)
+
+    # AWS VPC DNS is always <vpc_base>.2
+    echo "${base}.2"
+}
 
 # ------------------------------------------------------------
 #  UTILITY FUNCTIONS
@@ -122,6 +145,8 @@ get_public_ip() {
 
 # ------------------------------------------------------------
 #  INSTALL DOCKER — UNIVERSAL ACROSS DISTROS
+# ------------------------------------------------------------
+# (ALL YOUR DOCKER INSTALL FUNCTIONS REMAIN UNCHANGED)
 # ------------------------------------------------------------
 
 install_docker_debian() {
@@ -274,7 +299,7 @@ ADMIN_PORT=${ADMIN_PORT:-80}
 
 echo
 echo "DNS for clients:"
-echo "1) AWS VPC DNS"
+echo "1) AWS VPC DNS (auto detect)"
 echo "2) Cloudflare 1.1.1.1"
 echo "3) Google 8.8.8.8"
 echo "4) Quad9 9.9.9.9"
@@ -282,7 +307,7 @@ read -rp "DNS [1-4]: " D
 D=${D:-1}
 
 case "$D" in
-    1) DNS="${AWS_VPC_DNS}" ;;
+    1) DNS="$(detect_vpc_dns)" ;;
     2) DNS="1.1.1.1" ;;
     3) DNS="8.8.8.8" ;;
     4) DNS="9.9.9.9" ;;
