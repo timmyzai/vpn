@@ -193,9 +193,12 @@ install_docker() {
 # ============================================================
 # CLOUD CIDR AUTO-DETECTION
 # ============================================================
-
 get_cidr_by_cloud() {
+    unset WG_VPC_CIDR
+    WG_VPC_CIDR=""
+
     case "$1" in
+
         aws)
             TOKEN=$(curl -s --max-time 1 -X PUT \
                 "http://169.254.169.254/latest/api/token" \
@@ -204,10 +207,12 @@ get_cidr_by_cloud() {
             MAC=$(curl -s --max-time 1 -H "X-aws-ec2-metadata-token: $TOKEN" \
                 http://169.254.169.254/latest/meta-data/network/interfaces/macs/ | head -n 1)
 
+            MAC="${MAC%%/}/"  # ensure trailing slash
+
             if [[ -n "$MAC" ]]; then
                 WG_VPC_CIDR=$(curl -s --max-time 1 \
                     -H "X-aws-ec2-metadata-token: $TOKEN" \
-                    http://169.254.169.254/latest/meta-data/network/interfaces/macs/${MAC}vpc-ipv4-cidr-block)
+                    "http://169.254.169.254/latest/meta-data/network/interfaces/macs/${MAC}vpc-ipv4-cidr-block")
             fi
             ;;
 
@@ -219,16 +224,32 @@ get_cidr_by_cloud() {
                 "http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/subnetmask")
 
             if [[ -n "$IP" && -n "$MASK" ]]; then
-                WG_VPC_CIDR=$(ipcalc -n "$IP" "$MASK" | awk '/Network/ {print $2}')
+                # Convert dotted mask (255.255.240.0) to prefix (/20)
+                IFS='.' read -r m1 m2 m3 m4 <<< "$MASK"
+                BITS=$(printf "%08d%08d%08d%08d" \
+                    "$(bc <<< "obase=2;$m1")" \
+                    "$(bc <<< "obase=2;$m2")" \
+                    "$(bc <<< "obase=2;$m3")" \
+                    "$(bc <<< "obase=2;$m4")")
+                PREFIX=$(grep -o "1" <<< "$BITS" | wc -l)
+
+                # Calculate network base (bitwise AND)
+                IFS='.' read -r i1 i2 i3 i4 <<< "$IP"
+                nw1=$((i1 & m1))
+                nw2=$((i2 & m2))
+                nw3=$((i3 & m3))
+                nw4=$((i4 & m4))
+
+                WG_VPC_CIDR="${nw1}.${nw2}.${nw3}.${nw4}/${PREFIX}"
             fi
             ;;
 
         azure)
             NET=$(curl -s --max-time 1 -H Metadata:true \
-                "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/subnet/0/address?api-version=2021-02-01")
+                "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/subnet/0/address?api-version=2021-02-01&format=text")
 
             PREFIX=$(curl -s --max-time 1 -H Metadata:true \
-                "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/subnet/0/prefix?api-version=2021-02-01")
+                "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/subnet/0/prefix?api-version=2021-02-01&format=text")
 
             [[ -n "$NET" && -n "$PREFIX" ]] && WG_VPC_CIDR="$NET/$PREFIX"
             ;;
@@ -314,15 +335,36 @@ case "$DNSC" in
             esac
         done
 
-        echo "Fetching CIDR for $PROVIDER..."
+        echo "Detecting VPC CIDR from $PROVIDER..."
 
         if get_cidr_by_cloud "$PROVIDER"; then
-            DNS="AmazonProvidedDNS"
-            AUTO_VPC="yes"
             echo "CIDR detected: $WG_VPC_CIDR"
+
+            VPC_BASE_IP=$(echo "$WG_VPC_CIDR" | cut -d'/' -f1)
+            IFS='.' read -r o1 o2 o3 o4 <<< "$VPC_BASE_IP"
+
+            case "$PROVIDER" in
+                aws)
+                    DNS_PRIMARY="${o1}.${o2}.${o3}.$((o4 + 2))"
+                    ;;
+                gcp)
+                    # GCP internal DNS (always available)
+                    DNS_PRIMARY="169.254.169.254"
+                    ;;
+                azure)
+                    DNS_PRIMARY="${o1}.${o2}.${o3}.$((o4 + 1))"
+                    ;;
+                local)
+                    DNS_PRIMARY="${o1}.${o2}.${o3}.$((o4 + 1))"
+                    ;;
+            esac
+
+            DNS="${DNS_PRIMARY},8.8.8.8"
+            echo "Using Cloud DNS: $DNS"
         else
-            echo "Failed. Using fallback DNS."
-            DNS="8.8.8.8"
+            echo "❌ Cloud VPC CIDR detection failed ($PROVIDER)."
+            echo "Metadata unavailable. Installation stopped."
+            exit 1
         fi
         ;;
 
@@ -338,7 +380,10 @@ case "$DNSC" in
     11) DNS="77.88.8.8" ;;
     12) DNS="94.140.14.14" ;;
     13) DNS="8.8.8.8" ;;
-    14) read -rp "Custom DNS: " DNS ;;
+    14)
+        read -rp "Custom DNS: " CUSTOMDNS
+        DNS="$CUSTOMDNS"
+        ;;
 esac
 
 # Install docker if needed
