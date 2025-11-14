@@ -100,6 +100,31 @@ find_easyrsa_bin() {
 }
 
 # ------------------------------------------------------------
+# Universal DNS Detector (Cloud-agnostic + systemd-aware)
+# ------------------------------------------------------------
+detect_system_dns() {
+    local resolvconf
+
+    # If systemd-resolved stub is used, switch to real upstream file
+    if grep -q "127.0.0.53" /etc/resolv.conf; then
+        resolvconf="/run/systemd/resolve/resolv.conf"
+    else
+        resolvconf="/etc/resolv.conf"
+    fi
+
+    # Extract upstream IPv4 DNS that is NOT 127.x.x.x
+    local dns
+    dns=$(awk '/^nameserver/ && $2 !~ /^127\./ && $2 ~ /^[0-9.]+$/ {print $2; exit}' "$resolvconf")
+
+    if [[ -z "$dns" ]]; then
+        echo "❌ ERROR: Could not detect upstream DNS from $resolvconf" >&2
+        exit 1
+    fi
+
+    echo "$dns"
+}
+
+# ------------------------------------------------------------
 # CLIENT CREATOR
 # ------------------------------------------------------------
 new_client() {
@@ -273,13 +298,18 @@ PORT=${PORT:-1194}
 read -rp "Protocol 1)UDP 2)TCP [1]: " P
 [[ ${P:-1} == 2 ]] && PROTO=tcp || PROTO=udp
 
-echo "DNS: 1)System 2)Cloudflare 3)Google 4)Quad9"
+echo "DNS Options:"
+echo "1) Auto-detect system DNS (/etc/resolv.conf or systemd) — Recommended"
+echo "2) Cloudflare (1.1.1.1)"
+echo "3) Google (8.8.8.8)"
+echo "4) Quad9 (9.9.9.9)"
 read -rp "DNS [1]: " D
+
 case ${D:-1} in
-    1) DNS=$(awk '/nameserver/ {print $2;exit}' /etc/resolv.conf);;
-    2) DNS=1.1.1.1;;
-    3) DNS=8.8.8.8;;
-    4) DNS=9.9.9.9;;
+    1) DNS=$(detect_system_dns) ;;
+    2) DNS="1.1.1.1" ;;
+    3) DNS="8.8.8.8" ;;
+    4) DNS="9.9.9.9" ;;
 esac
 
 # ------------------------------------------------------------
