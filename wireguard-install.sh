@@ -1,7 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Config ---
 readonly WG_DIR="/etc/docker/containers/wg-easy"
 readonly WG_ENV="$WG_DIR/.env"
 readonly WG_COMPOSE="$WG_DIR/docker-compose.yml"
@@ -9,11 +8,135 @@ readonly ADMIN_PORT_INTERNAL=51821
 readonly TIMEOUT=30
 readonly AWS_VPC_DNS="169.254.169.253"
 
-# --- Functions ---
-check_pkg() {
-    command -v "$1" >/dev/null 2>&1 || \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "$1" >/dev/null 2>&1
+# ------------------------------------------------------------
+#  UTILITY FUNCTIONS
+# ------------------------------------------------------------
+
+header() { echo -e "\n=== $1 ===\n"; }
+
+detect_os() {
+    if [ -e /etc/debian_version ]; then
+        OS="debian"
+    elif [ -e /etc/redhat-release ]; then
+        OS="rhel"
+    elif grep -qi "amazon linux" /etc/os-release; then
+        OS="amazon"
+    elif grep -qi "fedora" /etc/os-release; then
+        OS="fedora"
+    else
+        echo "Unsupported OS"
+        exit 1
+    fi
 }
+
+detect_arch() {
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64) ARCH="amd64" ;;
+        aarch64 | arm64) ARCH="arm64" ;;
+        *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+    esac
+}
+
+ensure_sysctl() {
+    echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/wg-easy.conf
+    sysctl -p /etc/sysctl.d/wg-easy.conf >/dev/null 2>&1 || true
+}
+
+find_compose() {
+    if docker compose version >/dev/null 2>&1; then
+        COMPOSE="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        COMPOSE="docker-compose"
+    else
+        echo "ERROR: docker compose plugin not found"
+        exit 1
+    fi
+}
+
+get_public_ip() {
+    ip=$(timeout 5 curl -s ifconfig.me || true)
+    [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "$ip" || echo "$1"
+}
+
+# ------------------------------------------------------------
+#  INSTALL DOCKER — UNIVERSAL ACROSS DISTROS
+# ------------------------------------------------------------
+
+install_docker_debian() {
+    apt-get update -y
+    apt-get install -y ca-certificates curl gnupg lsb-release
+
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        -o /etc/apt/keyrings/docker.asc
+    chmod a+r /etc/apt/keyrings/docker.asc
+
+    . /etc/os-release
+    echo \
+"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list
+
+    apt-get update -y
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+}
+
+install_docker_rhel() {
+    yum install -y yum-utils device-mapper-persistent-data lvm2
+    yum-config-manager --add-repo \
+        https://download.docker.com/linux/centos/docker-ce.repo
+
+    yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+}
+
+install_docker_fedora() {
+    dnf -y install dnf-plugins-core
+    dnf config-manager --add-repo \
+        https://download.docker.com/linux/fedora/docker-ce.repo
+
+    dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+}
+
+install_docker_amazon2() {
+    amazon-linux-extras install docker -y
+    systemctl enable --now docker
+
+    # Compose plugin (manual install)
+    local version="v2.24.4"
+    curl -SL "https://github.com/docker/compose/releases/download/${version}/docker-compose-linux-${ARCH}" \
+        -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+}
+
+install_docker_amazon2023() {
+    dnf install -y dnf-plugins-core
+    dnf config-manager --add-repo \
+        https://download.docker.com/linux/fedora/docker-ce.repo
+
+    dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+}
+
+install_docker() {
+    case "$OS" in
+        debian) install_docker_debian ;;
+        rhel)   install_docker_rhel ;;
+        fedora) install_docker_fedora ;;
+        amazon)
+            if grep -q "Amazon Linux 2" /etc/os-release; then
+                install_docker_amazon2
+            else
+                install_docker_amazon2023
+            fi
+            ;;
+    esac
+
+    systemctl enable --now docker || true
+}
+
+# ------------------------------------------------------------
+#  FILE PATCHING FUNCTIONS
+# ------------------------------------------------------------
 
 set_port() {
     local pattern="$1"
@@ -21,141 +144,51 @@ set_port() {
     local file="$3"
     local INDENT="      "
 
-    grep -qF "$replace" "$file" && return 0
-
     awk -v pat="$pattern" -v rep="${INDENT}- \"$replace\"" '
         {
-            if (index($0, pat) > 0) {
+            if (index($0, pat) > 0 && !done) {
                 print rep
-                replaced=1
-            } else {
-                print
+                done=1
             }
+            print
         }
-        END { if (replaced != 1) print "__NO_MATCH_FOUND__" }
     ' "$file" > "${file}.tmp"
 
-    if grep -q "__NO_MATCH_FOUND__" "${file}.tmp"; then
-        awk -v rep="${INDENT}- \"$replace\"" '
-            {
-                print
-                if ($0 ~ /ports:/) print rep
-            }
-        ' "${file}.tmp" | grep -v "__NO_MATCH_FOUND__" > "${file}.patched"
-    else
-        mv "${file}.tmp" "${file}.patched"
-    fi
-
-    mv "${file}.patched" "$file"
-    rm -f "${file}.tmp" 2>/dev/null || true
+    mv "${file}.tmp" "$file"
 }
 
 ensure_restart() {
     local file="$1"
     grep -q "restart: unless-stopped" "$file" && return 0
-    sed -i "\|image:.*wg-easy|a\\
-        \    restart: unless-stopped" "$file"
+    sed -i "\|image:.*wg-easy|a\\    restart: unless-stopped" "$file"
 }
 
 inject_healthcheck() {
     local file="$1"
-    if ! grep -q "healthcheck:" "$file"; then
-        sed -i "\|image: ghcr.io/wg-easy/wg-easy|a\\
-        \  healthcheck:\\
-        \    test: [\"CMD\", \"curl\", \"-fsS\", \"http://localhost:51821/health\"]\\
-        \    interval: 30s\\
-        \    timeout: 5s\\
-        \    retries: 3" "$file"
-    fi
+    grep -q "healthcheck:" "$file" && return 0
+
+    sed -i '
+      \|image: ghcr.io/wg-easy/wg-easy|a\
+        healthcheck:\n\
+          test: ["CMD", "curl", "-fsS", "http://localhost:51821/health"]\n\
+          interval: 30s\n\
+          timeout: 5s\n\
+          retries: 3
+    ' "$file"
 }
 
-find_compose() {
-    if docker compose version >/dev/null 2>&1; then
-        COMPOSE="docker compose"
-    else
-        COMPOSE="docker-compose"
-    fi
-    command -v "${COMPOSE%% *}" >/dev/null 2>&1 || {
-        echo "Error: Docker Compose not found"; exit 1;
-    }
-}
+# ------------------------------------------------------------
+#  MAIN LOGIC
+# ------------------------------------------------------------
 
-header() { echo -e "\n=== $1 ===\n"; }
+detect_os
+detect_arch
 
-get_ip() {
-    local ip
-    ip=$(timeout 5 curl -s ifconfig.me 2>/dev/null || echo "")
-    [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "$ip" || echo "$1"
-}
-
-# --- Checks ---
-[ "$EUID" -ne 0 ] && { echo "Run as root"; exit 1; }
-[ ! -e /etc/debian_version ] && { echo "Debian/Ubuntu only"; exit 1; }
-
-apt-get update -y >/dev/null 2>&1
-check_pkg curl
+header "WIREGUARD INSTALLER (Universal Production Version)"
 
 PRIVATE_IP=$(hostname -I | awk '{print $1}')
-PUBLIC_IP=$(get_ip "$PRIVATE_IP")
+PUBLIC_IP=$(get_public_ip "$PRIVATE_IP")
 
-if command -v docker >/dev/null 2>&1; then
-    find_compose
-else
-    COMPOSE=""
-fi
-
-# --- Detect Existing Installation ---
-WG_INSTALLED=0
-docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^wg-easy$' && WG_INSTALLED=1
-[ $WG_INSTALLED -eq 0 ] && [ -f "$WG_COMPOSE" ] && WG_INSTALLED=1
-[ $WG_INSTALLED -eq 0 ] && [ -d "$WG_DIR" ] && WG_INSTALLED=1
-
-if [ $WG_INSTALLED -eq 1 ]; then
-    header "WG-EASY DETECTED"
-    echo "1) View Logs"
-    echo "2) Uninstall Completely"
-    echo "3) Change WG_HOST"
-    echo "4) Exit"
-    read -rp "Choice [1-4]: " choice
-
-    case "$choice" in
-        1)
-            docker logs wg-easy --tail 50 -f || true
-            exit 0
-            ;;
-        2)
-            read -rp "Confirm uninstall? (y/N): " c
-            [[ "$c" =~ ^[yY]$ ]] || exit 0
-            if [ -n "$COMPOSE" ] && [ -f "$WG_COMPOSE" ]; then
-                timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" down || true
-            fi
-            docker rm -f wg-easy 2>/dev/null || true
-
-            WG_IMAGE_IDS=$(docker images --format "{{.Repository}} {{.ID}}" \
-                | awk '$1=="ghcr.io/wg-easy/wg-easy"{print $2}')
-            [ -n "$WG_IMAGE_IDS" ] && docker rmi -f $WG_IMAGE_IDS || true
-            docker image prune -af >/dev/null 2>&1 || true
-            rm -rf "$WG_DIR"
-            echo "✓ Uninstalled"
-            exit 0
-            ;;
-        3)
-            read -rp "New WG_HOST: " new_host
-            [ -z "$new_host" ] && exit 0
-            sed -i "s#^WG_HOST=.*#WG_HOST=${new_host}#" "$WG_ENV"
-            timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" down || true
-            timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" up -d
-            echo "✓ WG_HOST updated"
-            exit 0
-            ;;
-        *)
-            exit 0
-            ;;
-    esac
-fi
-
-# --- New Install ---
-header "WIREGUARD INSTALLER"
 echo "Private: $PRIVATE_IP"
 echo "Public : $PUBLIC_IP"
 
@@ -164,16 +197,13 @@ WG_HOST="${WG_HOST:-$PUBLIC_IP}"
 
 echo
 echo "Admin UI Exposure:"
-echo "1) Direct IP (HTTP) - Binds to Private IP"
-echo "2) Public ALB + Route53 (HTTPS)"
-echo "3) Private ALB + Route53 (HTTPS Internal)"
+echo "1) Direct IP (HTTP)"
+echo "2) Public ALB (HTTPS → private)"
+echo "3) Private ALB (Internal HTTPS)"
 read -rp "Mode [3]: " UI_MODE
 UI_MODE=${UI_MODE:-3}
 
-case "$UI_MODE" in
-    1|2|3) BIND_IP="$PRIVATE_IP" ;;
-    *) echo "Invalid UI Mode"; exit 1 ;;
-esac
+BIND_IP="$PRIVATE_IP"
 
 read -rp "WG Port [51820]: " WG_PORT
 WG_PORT=${WG_PORT:-51820}
@@ -182,65 +212,36 @@ read -rp "Admin EXTERNAL Port [80]: " ADMIN_PORT
 ADMIN_PORT=${ADMIN_PORT:-80}
 
 echo
-echo "------ DNS RESOLVER ------"
-echo "Choose DNS for VPN clients:"
-echo "1) System DNS (AWS VPC DNS)"
+echo "DNS for clients:"
+echo "1) AWS VPC DNS"
 echo "2) Cloudflare 1.1.1.1"
 echo "3) Google 8.8.8.8"
 echo "4) Quad9 9.9.9.9"
 read -rp "DNS [1-4]: " D
 D=${D:-1}
 
-case $D in
-    1)
-        DNS="${AWS_VPC_DNS}"
-        WG_HOST="${PRIVATE_IP}"
-        ;;
+case "$D" in
+    1) DNS="${AWS_VPC_DNS}" ;;
     2) DNS="1.1.1.1" ;;
     3) DNS="8.8.8.8" ;;
     4) DNS="9.9.9.9" ;;
-    *) DNS="1.1.1.1" ;;
 esac
 
-# Install Docker if needed
+ensure_sysctl
+
 if ! command -v docker >/dev/null 2>&1; then
-    echo "Installing Docker..."
-    apt-get install -y ca-certificates curl gnupg lsb-release >/dev/null 2>&1
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-    chmod a+r /etc/apt/keyrings/docker.asc
-
-    . /etc/os-release
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-https://download.docker.com/linux/ubuntu ${UBUNTU_CODENAME:-$VERSION_CODENAME} stable" \
-      > /etc/apt/sources.list.d/docker.list
-
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
-    systemctl enable --now docker
-
-    for i in {1..5}; do
-        if find_compose 2>/dev/null; then break; fi
-        sleep 1
-    done
-    echo "✓ Docker installed"
+    header "Installing Docker"
+    install_docker
 fi
+
+find_compose
 
 mkdir -p "$WG_DIR"
 cd "$WG_DIR"
 
-# Download compose file
-if [ ! -f docker-compose.yml ]; then
-    curl -fsSL -o docker-compose.yml \
-        https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
-fi
+curl -fsSL -o docker-compose.yml \
+    https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
 
-if [ ! -s docker-compose.yml ]; then
-    echo "Error: Failed to download docker-compose.yml"
-    exit 1
-fi
-
-# Create .env WITHOUT PASSWORD
 cat > .env <<EOF
 WG_HOST=${WG_HOST}
 WG_PORT=${WG_PORT}
@@ -257,7 +258,7 @@ set_port "${ADMIN_PORT_INTERNAL}/tcp" "0.0.0.0:${ADMIN_PORT}:${ADMIN_PORT_INTERN
 ensure_restart "$WG_COMPOSE"
 inject_healthcheck "$WG_COMPOSE"
 
-echo "Starting wg-easy..."
+header "Starting wg-easy"
 timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" up -d
 
 header "INSTALL COMPLETE"
@@ -266,11 +267,11 @@ echo
 echo "Admin UI:"
 case "$UI_MODE" in
     1) echo "http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
-    2) echo "HTTPS via PUBLIC ALB → forwards to http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
-    3) echo "HTTPS via PRIVATE ALB → forwards to http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
+    2) echo "HTTPS via PUBLIC ALB → http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
+    3) echo "HTTPS via PRIVATE ALB → http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
 esac
 
 echo
-echo "Config stored in: $WG_DIR/.env"
-echo "⚠️ On first UI visit, system will prompt to create ADMIN user/password."
+echo "Config stored in: $WG_ENV"
+echo "Admin will be created on first visit."
 exit 0
