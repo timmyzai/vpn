@@ -1,208 +1,254 @@
 # ⭐ **OpenVPN Installer & Management Script**
 
+### Automated • Secure • ALB-Compatible • ECC PKI • Multi-OS Support
+
 ---
 
 # 🚀 Overview
 
-A fully automated OpenVPN installer with easy setup, ECC security, NAT configuration, and complete client management.
-Designed for clean deployment, ALB integration, and simple maintenance.
+A fully automated OpenVPN installation and management script designed for modern cloud setups, ALB routing (Public/Private), ECC cryptography, safe PKI generation, NAT/firewall automation, and easy client management.
+
+Built with safety, idempotency, and maintainability in mind.
 
 ---
 
-# 🖥️ Tested Platform
+# 🖥️ Tested Platform (Verified)
 
-✔️ **Ubuntu 24.04 (ARM64)**
-✔️ Works with **Public ALB**
-✔️ Works with **Private ALB**
+✔ **Ubuntu 24.04 LTS (ARM64)**
+✔ **Public ALB** (HTTPS → Private IP)
+✔ **Private ALB** (Internal-only routing)
 
-⚠️ **Not tested yet:**
-• Direct IP installation (without ALB)
-• Other Linux distributions
+⚠ **Not tested yet** (supported but unverified):
+• Direct IP mode (no ALB)
+• Ubuntu x86_64
+• RHEL / CentOS / Alma / Rocky / Fedora
+• Amazon Linux 2 / Amazon Linux 2023
+
+You are welcome to contribute more testing results.
 
 ---
 
-# ⚙️ Compatibility (Supported but *NOT* tested)
+# ⚙️ Supported Platforms (The Script Auto-Detects)
 
-• Debian / Ubuntu family
+This script supports the following families:
+
+• Debian / Ubuntu
 • RHEL / CentOS / Rocky / AlmaLinux
 • Fedora
-• Amazon Linux 2 / 2023
+• Amazon Linux 2
+• Amazon Linux 2023
+
+> Note: Only Ubuntu 24.04 ARM64 is confirmed working.
 
 ---
 
 # 🔐 Security Features
 
-• ECC certificates (prime256v1)
-• AES-256-GCM encryption
-• SHA-256 authentication
-• tls-crypt tunnel protection
-• Hardened server configuration
+• ECC Certificates (**prime256v1**)
+• AES-256-GCM Encryption
+• SHA-256 Authentication
+• `tls-crypt` Key Protection
+• Hardened OpenVPN server configuration
+• Secure, automated EasyRSA PKI
+• Status logging for monitoring
 
 ---
 
 # 🌐 Networking Features
 
-• Auto NAT (iptables / firewalld)
+• Automatic NAT (iptables / firewalld)
+• NAT duplication prevention
 • Persistent IP forwarding
-• UDP or TCP
-• DNS options: Cloudflare, Google, Quad9, System
-• Auto-detect server IP (can override)
+• Supports UDP or TCP
+• DNS options:
+– System resolver
+– Cloudflare (1.1.1.1)
+– Google (8.8.8.8)
+– Quad9 (9.9.9.9)
+• SELinux auto-handling on RHEL systems
 
 ---
 
-# 🛠️ Maintenance Mode (If OpenVPN Exists)
+# 🛠️ Maintenance Mode (Auto-detected if OpenVPN Already Exists)
 
-1. Add VPN user
-2. Revoke VPN user
+Maintenance mode appears automatically when OpenVPN is installed.
+
+Options:
+
+1. Add client
+2. Revoke client
 3. List valid users
-4. Update public IP in all .ovpn files
-5. Uninstall OpenVPN
-6. Exit menu
+4. Override public IP in all .ovpn profiles
+5. Clean uninstall (firewall + sysctl + config)
+6. Exit
 
 ---
 
 # 📦 Requirements
 
-• Root access
+• Root access (auto elevates via sudo)
 • TUN device enabled
-• Internet connection
-• curl installed
+• Internet access
+• `curl` installed
 
 Auto-installs:
 • openvpn
 • easy-rsa
-• iptables/firewalld
-• netfilter-persistent or iptables-persistent
+• iptables / firewalld
+• iptables-persistent / netfilter-persistent (Debian)
 
 ---
 
 # 📥 Installation
 
-wget -O openvpn-install.sh [https://your-github-link/openvpn-install.sh](https://your-github-link/openvpn-install.sh)
+```
+wget -O openvpn-install.sh https://your-github-repo/openvpn-install.sh
 chmod +x openvpn-install.sh
 sudo ./openvpn-install.sh
+```
 
 ---
 
 # 🚀 Setup Flow
 
-1️⃣ Detect server IP
-2️⃣ Choose port (default 1194)
-3️⃣ Choose protocol (UDP/TCP)
-4️⃣ Select DNS resolver
-5️⃣ Generate ECC PKI
-6️⃣ Configure firewall + NAT
-7️⃣ Enable & start OpenVPN
+1. Detect public IP
+2. Confirm/override IP
+3. Choose port (default 1194)
+4. Choose protocol (UDP/TCP)
+5. Select DNS
+6. Generate ECC PKI
+7. Generate `tls-crypt` key
+8. Configure NAT + firewall
+9. Start OpenVPN service
+10. Create first client (optional)
 
 ---
 
 # 👥 Client Management
 
-➕ Add new client (.ovpn auto-generated)
-➖ Revoke client
-📄 List active users
-🌐 Overwrite public IP (regenerate all profiles)
+**Add new client**
+• Creates `/root/<client>.ovpn`
+• Bundles CA, cert, key, tls-crypt
+• ECC certificate
+• Optional password protection
 
-Output directory:
-`/root/<client-name>.ovpn`
+**Revoke client**
+• Updates CRL
+• Restarts service
+
+**List users**
+• Reads index.txt from EasyRSA
+
+**Override public IP**
+• Rewrites all `.ovpn` files
 
 ---
 
 # 🔥 Firewall Behavior
 
-firewalld systems:
-• Open VPN port
-• Enable masquerade
+### firewalld systems:
 
-iptables systems:
-• MASQUERADE 10.8.0.0/24
-• Enable IPv4 forwarding
+• Opens OpenVPN port
+• Enables masquerading
+• Reloads configuration
+
+### iptables systems:
+
+• Adds NAT:
+`MASQUERADE 10.8.0.0/24`
+• Prevents duplicate NAT rules
+• Persists rules via `netfilter-persistent` if available
 
 ---
 
-# 🗑️ Uninstall
+# 🗑️ Uninstall (Clean Removal)
 
-Run script → Choose option **5**
+Maintenance Menu → Option 5
 Removes:
-• OpenVPN config
-• Certificates
-• CRL
-• NAT rules (where possible)
-• Systemd service
+
+• OpenVPN service & configs
+• ECC keys + PKI
+• sysctl forwarding rule
+• NAT rules
+• firewall-cmd or iptables cleanup (port + masquerade)
+
+Uninstall leaves the server clean and safe.
 
 ---
 
-# 🤝 For Developers
+# 🔍 Troubleshooting
 
-• Fork the repository
-• Test on more OS versions
-• Test **Direct IP** mode
-• Submit issues & PRs
-• Share “working / not working” environments
+**Client connects but no Internet**
+• NAT missing
+• Reinstall or reapply firewall rules
 
-Your feedback improves cross-platform support.
+**ALB health check fails**
+• Ensure port is open
+• Check `openvpn-status.log`
 
----
-
-# 🎨 Canva Layout Ideas (As You Requested)
-
-Here are **ready-to-design** Canva layout ideas:
-
-### 🟦 Layout 1: Clean Tech Poster
-
-• Title banner at top
-• 4 wide columns: Security / Networking / Tested / Requirements
-• Bottom strip: Installation command + QR code to GitHub
-
-### 🟥 Layout 2: Step-by-Step Infographic
-
-• Vertical timeline: Install → Setup → Manage → Uninstall
-• Icons: Shield, Server, Network, User
-• Use blue + grey theme for a “DevOps look”
-
-### 🟩 Layout 3: Developer Contribution Card
-
-• “Tested on Ubuntu 24.04 ARM64” badge
-• “Not tested: Direct IP” section
-• GitHub fork/share icons
-• Big QR to repository
-
-### 🟪 Layout 4: Documentation Slide (Presentation)
-
-• Left: Server diagram (ALB → OpenVPN → Clients)
-• Right: Feature list
-• Footer: Compatibility + Tested platform
-
-### 🟧 Layout 5: Minimal A4
-
-• All sections in blocks
-• Light grey background
-• Big headings
-• Professional, printable
+**Service doesn’t start**
+• Check SELinux (RHEL)
+• Ensure ECC curve support
 
 ---
 
-📜 License & Disclaimer
-MIT License
+# 🤝 Contributing
 
-© Timmy Chin Did Choong
+You are welcome to:
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+• Fork this project
+• Submit fixes or enhancements
+• Test on more OSes
+• Report issues
+• Improve documentation
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+Especially helpful:
 
-THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+✔ Direct IP mode testing
+✔ OS compatibility testing
+✔ Firewall improvements
+✔ Security hardening suggestions
 
-⚠️ Additional Disclaimer
+---
 
-This installer script is provided as-is, with no guarantees, no warranty, and no responsibility from the author.
+# 📜 License & Disclaimer
 
-By using, running, modifying, or deploying this script, you agree that:
+**MIT License — © Timmy Chin Did Choong**
 
-• You assume full responsibility for any system changes or consequences
-• The author is not liable for misconfiguration, downtime, data loss, security vulnerabilities, service disruption, or any unintended side effects
-• You must review and validate the script before using it in any environment
-• All use is strictly at your own risk
-• This tool is intended for users familiar with Linux, networking, and VPN configuration
+This software is provided **as-is**, without warranty or guarantee of any kind.
+You accept full responsibility for any outcome of using this script.
+The author is not liable for system issues, misconfiguration, security breaches, downtime, or legal/regulatory consequences from VPN usage.
+
+This script is **not affiliated with OpenVPN, WireGuard, wg-easy, or any VPN provider.**
+
+Use at your own risk.
+
+---
+
+# 🎨 Canva Layout Ideas (Optional)
+
+### 🟦 **Layout 1: Feature Blocks**
+
+• Large title banner
+• Four feature boxes (Security, Networking, Maintenance, Requirements)
+• Footer with installation command + QR code
+
+### 🟩 **Layout 2: Technical Flowchart**
+
+• Diagram: User → ALB → OpenVPN → Clients
+• Steps aligned vertically
+• Icons for encryption, firewall, DNS
+
+### 🟥 **Layout 3: Minimal A4 Documentation**
+
+• Clean headings
+• Grey separators
+• Ideal for printing or exporting to PDF
+
+### 🟪 **Layout 4: Developer Card**
+
+• Tested platform badges
+• “Supported but untested” section
+• GitHub fork instructions
 
 ---
