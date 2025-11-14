@@ -249,18 +249,28 @@ services:
   wg-easy:
     image: ghcr.io/wg-easy/wg-easy:15
     container_name: wg-easy
-    env_file:
-      - .env
+
+    environment:
+      - WG_HOST=${HOST}
+      - WG_PORT=${WG_PORT}
+      - PORT=51821
+      - WG_DEFAULT_DNS=${DNS}
+      - WG_ALLOWED_IPS=0.0.0.0/0,::/0
+
     volumes:
       - etc_wireguard:/etc/wireguard
       - /lib/modules:/lib/modules:ro
+
     ports:
       - "${PRIVATE_IP}:${WG_PORT}:51820/udp"
       - "0.0.0.0:${ADMIN_PORT}:51821/tcp"
+
     restart: unless-stopped
+
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
+
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
@@ -271,18 +281,6 @@ services:
 volumes:
   etc_wireguard:
 EOF
-
-# ------------------------------------------------------------
-# Write environment file
-# ------------------------------------------------------------
-cat > .env <<EOF
-WG_HOST=${HOST}
-WG_PORT=${WG_PORT}
-PORT=51821
-WG_DEFAULT_DNS=${DNS}
-WG_ALLOWED_IPS=0.0.0.0/0,::/0
-EOF
-chmod 600 .env
 
 header "Starting wg-easy"
 $COMPOSE up -d
@@ -296,35 +294,13 @@ echo "Config stored at: /etc/docker/containers/wg-easy/.env"
 # ------------------------------------------------------------
 # ALB Health Check Recommendation
 # ------------------------------------------------------------
-cat > /etc/docker/containers/wg-easy/ALB-HEALTHCHECK.txt <<EOF
-===============================
- AWS ALB Target Group Settings
-===============================
-
-Recommended Health Check:
-
-Protocol: HTTP
-Port: 51821
-Path: /setup/1
-Success codes: 200
-Healthy threshold: 2
-Unhealthy threshold: 5
-Timeout: 5 seconds
-Interval: 10–30 seconds
-
-Reason:
-- / redirects with 302 before setup → ALB marks unhealthy
-- /login also redirects → 302
-- /setup/1 always returns 200 OK (before & after admin setup)
-EOF
-
-echo
-echo "AWS ALB Health Check (recommended):"
-echo "  Protocol: HTTP"
-echo "  Port: 51821"
-echo "  Path: /setup/1"
-echo "  Success codes: 200"
-echo
-
+echo "Protocol: HTTP"
+echo "Port: 51821"
+echo "Path: /setup/1"
+echo "Success codes: 200"
+echo "Healthy threshold: 2"
+echo "Unhealthy threshold: 5"
+echo "Timeout: 5 seconds"
+echo "Interval: 10–30 seconds"
 exit 0
 
