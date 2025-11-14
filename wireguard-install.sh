@@ -268,5 +268,38 @@ echo "WireGuard Endpoint: ${HOST}:${WG_PORT}"
 echo "Admin UI: http://${PRIVATE_IP}:${ADMIN_PORT}"
 echo "Config stored at: /etc/docker/containers/wg-easy/.env"
 
+# ------------------------------------------------------------
+# ALB Health Check Recommendation
+# ------------------------------------------------------------
+cat > /etc/docker/containers/wg-easy/ALB-HEALTHCHECK.txt <<EOF
+===============================
+ AWS ALB Target Group Settings
+===============================
+
+Recommended Health Check:
+
+Protocol: HTTP
+Port: 51821
+Path: /setup/1
+Success codes: 200
+Healthy threshold: 2
+Unhealthy threshold: 5
+Timeout: 5 seconds
+Interval: 10–30 seconds
+
+Reason:
+- / redirects with 302 before setup → ALB marks unhealthy
+- /login also redirects → 302
+- /setup/1 always returns 200 OK (before & after admin setup)
+EOF
+
+echo
+echo "AWS ALB Health Check (recommended):"
+echo "  Protocol: HTTP"
+echo "  Port: 51821"
+echo "  Path: /setup/1"
+echo "  Success codes: 200"
+echo
+
 exit 0
 
