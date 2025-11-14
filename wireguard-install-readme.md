@@ -183,10 +183,29 @@ Pull requests welcome for:
 
 ---
 
-# 📜 **License**
-
+📜 License & Disclaimer
 MIT License
+
 © Timmy Chin Did Choong
 
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+⚠️ Additional Disclaimer
+
+This installer script is provided as-is, with no guarantees, no warranty, and no responsibility from the author.
+
+By using, running, modifying, or deploying this script, you agree that:
+
+• You assume full responsibility for any system changes or consequences
+• The author is not liable for misconfiguration, downtime, data loss, security vulnerabilities, service disruption, or any unintended side effects
+• You must review and validate the script before using it in any environment
+• All use is strictly at your own risk
+• This tool is intended for users familiar with Linux, networking, and VPN configuration
+
+---
 ---
 
