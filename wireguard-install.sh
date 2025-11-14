@@ -245,8 +245,6 @@ cd /etc/docker/containers/wg-easy
 # Write our own clean, stable docker-compose.yml
 # ------------------------------------------------------------
 cat > docker-compose.yml <<EOF
-version: "3.9"
-
 services:
   wg-easy:
     image: ghcr.io/wg-easy/wg-easy:15
