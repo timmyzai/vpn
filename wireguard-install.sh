@@ -359,7 +359,7 @@ case "$DNSC" in
                     ;;
             esac
 
-            DNS="${DNS_PRIMARY},8.8.8.8"
+            DNS="${DNS_PRIMARY}"
             echo "Using Cloud DNS: $DNS"
         else
             echo "❌ Cloud VPC CIDR detection failed ($PROVIDER)."
