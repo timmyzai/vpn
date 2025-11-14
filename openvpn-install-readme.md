@@ -1,179 +1,183 @@
-# 🚀 OpenVPN Installer & Management Script
-
-A fully automated **OpenVPN installation & client management script** designed for **Debian/Ubuntu**. Supports **ECC keys**, **AES‑256‑GCM**, **TLS‑Crypt**, user management, IP override, firewall rules, and embedded `.ovpn` profiles.
+# ⭐ **OpenVPN Installer & Management Script**
 
 ---
 
-## ✨ Features
+# 🚀 Overview
 
-### 🔐 Security & Cryptography
-
-* AES‑256‑GCM encryption
-* SHA‑256 authentication
-* ECC (prime256v1) certificates
-* `tls-crypt` key for TLS channel protection
-* Strong default OpenVPN configuration
-
-### 🌐 Network Features
-
-* UDP (default) and TCP support
-* Auto‑detects server public IP (manual override available)
-* DNS options: System / Cloudflare / Google / Quad9
-* Enables NAT forwarding with iptables
-
-### 🛠️ Management Mode
-
-When OpenVPN is already installed, the script switches to maintenance mode:
-
-| Option | Action                                  |
-| ------ | --------------------------------------- |
-| 1      | Add new client                          |
-| 2      | Revoke existing client                  |
-| 3      | List all active users                   |
-| 4      | Override public IP in all `.ovpn` files |
-| 5      | Remove OpenVPN completely               |
-| 6      | Exit                                    |
+A fully automated OpenVPN installer with easy setup, ECC security, NAT configuration, and complete client management.
+Designed for clean deployment, ALB integration, and simple maintenance.
 
 ---
 
-## 📦 Requirements
+# 🖥️ Tested Platform
 
-* Root privileges
-* Debian/Ubuntu
-* TUN device enabled
-* Packages auto‑installed if missing:
+✔️ **Ubuntu 24.04 (ARM64)**
+✔️ Works with **Public ALB**
+✔️ Works with **Private ALB**
 
-  * openvpn
-  * easy‑rsa
-  * iptables
-  * curl
+⚠️ **Not tested yet:**
+• Direct IP installation (without ALB)
+• Other Linux distributions
 
 ---
 
-## 📥 Installation
+# ⚙️ Compatibility (Supported but *NOT* tested)
 
-```bash
-wget -O openvpn-install.sh https://your-github-link/openvpn-install.sh
+• Debian / Ubuntu family
+• RHEL / CentOS / Rocky / AlmaLinux
+• Fedora
+• Amazon Linux 2 / 2023
+
+---
+
+# 🔐 Security Features
+
+• ECC certificates (prime256v1)
+• AES-256-GCM encryption
+• SHA-256 authentication
+• tls-crypt tunnel protection
+• Hardened server configuration
+
+---
+
+# 🌐 Networking Features
+
+• Auto NAT (iptables / firewalld)
+• Persistent IP forwarding
+• UDP or TCP
+• DNS options: Cloudflare, Google, Quad9, System
+• Auto-detect server IP (can override)
+
+---
+
+# 🛠️ Maintenance Mode (If OpenVPN Exists)
+
+1. Add VPN user
+2. Revoke VPN user
+3. List valid users
+4. Update public IP in all .ovpn files
+5. Uninstall OpenVPN
+6. Exit menu
+
+---
+
+# 📦 Requirements
+
+• Root access
+• TUN device enabled
+• Internet connection
+• curl installed
+
+Auto-installs:
+• openvpn
+• easy-rsa
+• iptables/firewalld
+• netfilter-persistent or iptables-persistent
+
+---
+
+# 📥 Installation
+
+wget -O openvpn-install.sh [https://your-github-link/openvpn-install.sh](https://your-github-link/openvpn-install.sh)
 chmod +x openvpn-install.sh
 sudo ./openvpn-install.sh
-```
 
 ---
 
-## 🚀 First‑Time Setup Flow
+# 🚀 Setup Flow
 
-### 1️⃣ Public IP
-
-Auto‑detected from ifconfig.me (override allowed).
-
-### 2️⃣ Port
-
-Default: **1194**
-
-### 3️⃣ Protocol
-
-* UDP (recommended)
-* TCP (for restrictive networks)
-
-### 4️⃣ DNS Resolver
-
-System / Cloudflare / Google / Quad9
-
-### 5️⃣ Create First Client (Optional)
-
-Profile stored in `/root/<name>.ovpn`.
+1️⃣ Detect server IP
+2️⃣ Choose port (default 1194)
+3️⃣ Choose protocol (UDP/TCP)
+4️⃣ Select DNS resolver
+5️⃣ Generate ECC PKI
+6️⃣ Configure firewall + NAT
+7️⃣ Enable & start OpenVPN
 
 ---
 
-## 👤 Client Management
+# 👥 Client Management
 
-### ➕ Add Client
+➕ Add new client (.ovpn auto-generated)
+➖ Revoke client
+📄 List active users
+🌐 Overwrite public IP (regenerate all profiles)
 
-Run script → choose option **1**.
-
-### ➖ Revoke Client
-
-Run script → choose option **2**.
-
-### 📃 List Users
-
-Run script → choose option **3**.
-
-### 🌐 Override Public IP in All Profiles
-
-Run script → choose option **4**.
+Output directory:
+`/root/<client-name>.ovpn`
 
 ---
 
-## 📁 Output Location
+# 🔥 Firewall Behavior
 
-Generated `.ovpn` files are stored in:
+firewalld systems:
+• Open VPN port
+• Enable masquerade
 
-```
-/root/<client-name>.ovpn
-```
-
-Each profile contains embedded:
-
-* CA certificate
-* Client certificate
-* Client private key
-* tls‑crypt key
+iptables systems:
+• MASQUERADE 10.8.0.0/24
+• Enable IPv4 forwarding
 
 ---
 
-## 🔥 Uninstallation
+# 🗑️ Uninstall
 
-```bash
-sudo ./openvpn-install.sh
-# Choose option 5
-```
-
-Removes everything under `/etc/openvpn`.
-
----
-
-## 🧱 Firewall Notes
-
-Script configures NAT:
-
-```bash
-iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -j MASQUERADE
-echo 1 > /proc/sys/net/ipv4/ip_forward
-```
-
-If using UFW:
-
-```bash
-sudo ufw allow 1194/udp
-sudo ufw allow OpenSSH
-sudo ufw disable && sudo ufw enable
-```
+Run script → Choose option **5**
+Removes:
+• OpenVPN config
+• Certificates
+• CRL
+• NAT rules (where possible)
+• Systemd service
 
 ---
 
-## ☑️ Verified On
+# 🤝 For Developers
 
-| OS           | Status              |
-| ------------ | ------------------- |
-| Ubuntu 22.04 | ✅ Fully tested      |
-| Ubuntu 20.04 | ✅                   |
-| Debian 11    | ⚠️ Expected to work |
-| CentOS/RHEL  | ❌ Not supported     |
-| Amazon Linux | ❌ Not supported     |
+• Fork the repository
+• Test on more OS versions
+• Test **Direct IP** mode
+• Submit issues & PRs
+• Share “working / not working” environments
 
----
-
-## 📜 Notes
-
-* Script automatically loads server PROTO & PORT for consistent `.ovpn` generation.
-* ECC certificates improve performance and security.
-* Client configs are fully self‑contained.
+Your feedback improves cross-platform support.
 
 ---
 
-## 📄 License
+# 🎨 Canva Layout Ideas (As You Requested)
 
-MIT License
+Here are **ready-to-design** Canva layout ideas:
+
+### 🟦 Layout 1: Clean Tech Poster
+
+• Title banner at top
+• 4 wide columns: Security / Networking / Tested / Requirements
+• Bottom strip: Installation command + QR code to GitHub
+
+### 🟥 Layout 2: Step-by-Step Infographic
+
+• Vertical timeline: Install → Setup → Manage → Uninstall
+• Icons: Shield, Server, Network, User
+• Use blue + grey theme for a “DevOps look”
+
+### 🟩 Layout 3: Developer Contribution Card
+
+• “Tested on Ubuntu 24.04 ARM64” badge
+• “Not tested: Direct IP” section
+• GitHub fork/share icons
+• Big QR to repository
+
+### 🟪 Layout 4: Documentation Slide (Presentation)
+
+• Left: Server diagram (ALB → OpenVPN → Clients)
+• Right: Feature list
+• Footer: Compatibility + Tested platform
+
+### 🟧 Layout 5: Minimal A4
+
+• All sections in blocks
+• Light grey background
+• Big headings
+• Professional, printable
 
 ---
