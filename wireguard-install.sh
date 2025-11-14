@@ -1,4 +1,4 @@
-#!/bin/bash
+c#!/bin/bash
 # ------------------------------------------------------------
 # 📜 License & Disclaimer
 # ------------------------------------------------------------
@@ -244,6 +244,9 @@ cd /etc/docker/containers/wg-easy
 # Download compose
 curl -fsSL -o docker-compose.yml \
     https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
+
+# Inject env_file .env into wg-easy service
+sed -i '/container_name: wg-easy/a \    env_file:\n      - .env' docker-compose.yml
 
 # Write env
 cat > .env <<EOF
