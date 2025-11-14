@@ -58,7 +58,6 @@
 #
 # USE THIS SCRIPT ENTIRELY AT YOUR OWN RISK.
 # ------------------------------------------------------------
-#!/bin/bash
 set -euo pipefail
 
 # ============================================================
@@ -135,15 +134,15 @@ esac
 header() { echo -e "\n=== $1 ===\n"; }
 
 detect_os() {
-    if [ -e /etc/debian_version ]; then
-        OS="debian"
-    elif grep -qi "amazon linux" /etc/os-release; then
-        OS="amazon"
-    elif [ -e /etc/redhat-release ]; then
-        OS="rhel"
-    else
-        OS="unknown"
-    endif
+    if [ -e /etc/debian_version ]; then
+        OS="debian"
+    elif grep -qi "amazon linux" /etc/os-release; then
+        OS="amazon"
+    elif [ -e /etc/redhat-release ]; then
+        OS="rhel"
+    else
+        OS="unknown"
+    fi
 }
 
 detect_arch() {
@@ -216,46 +215,44 @@ ADMIN_PORT="${ADMIN_PORT:-80}"
 
 echo
 echo "What DNS resolvers do you want to use with the VPN?"
-echo "   1) Current system resolvers (from /etc/resolv.conf)"
-echo "   2) Self-hosted DNS Resolver (Unbound) - Needs manual setup later"
-echo "   3) Cloudflare (Anycast: worldwide, 1.1.1.1)"
-echo "   4) Quad9 (Anycast: worldwide, Security: 9.9.9.9)"
-echo "   5) Quad9 uncensored (Anycast: worldwide, Unfiltered: 9.9.9.10)"
-echo "   6) FDN (France, Privacy-focused: 80.67.169.12)"
-echo "   7) DNS.WATCH (Germany, Unfiltered/No-logging: 84.200.69.80)"
-echo "   8) OpenDNS (Anycast: worldwide, Security/Parental Control: 208.67.222.222)"
-echo "   9) Google (Anycast: worldwide, 8.8.8.8)"
-echo "   10) Yandex Basic (Russia, 77.88.8.8)"
-echo "   11) AdGuard DNS (Anycast: worldwide, Ad-blocking: 94.140.14.14)"
-echo "   12) NextDNS (Customizable filtering) - Not supported by single IP"
-echo "   13) Custom"
+echo "   1) Current system resolvers (from /etc/resolv.conf)"
+echo "   2) Self-hosted DNS Resolver (Unbound) - Needs manual setup later"
+echo "   3) Cloudflare (Anycast: worldwide, 1.1.1.1)"
+echo "   4) Quad9 (Anycast: worldwide, Security: 9.9.9.9)"
+echo "   5) Quad9 uncensored (Anycast: worldwide, Unfiltered: 9.9.9.10)"
+echo "   6) FDN (France, Privacy-focused: 80.67.169.12)"
+echo "   7) DNS.WATCH (Germany, Unfiltered/No-logging: 84.200.69.80)"
+echo "   8) OpenDNS (Anycast: worldwide, Security/Parental Control: 208.67.222.222)"
+echo "   9) Google (Anycast: worldwide, 8.8.8.8)"
+echo "   10) Yandex Basic (Russia, 77.88.8.8)"
+echo "   11) AdGuard DNS (Anycast: worldwide, Ad-blocking: 94.140.14.14)"
+echo "   12) NextDNS (Customizable filtering) - Not supported by single IP"
+echo "   13) Custom"
 
 # Input reading loop and validation for options 1 through 13
 until [[ $DNSC =~ ^[0-9]+$ ]] && [ "$DNSC" -ge 1 ] && [ "$DNSC" -le 13 ]; do
-    read -rp "DNS [1-13]: " -e -i 3 DNSC # Setting default to 3 (Cloudflare)
+    read -rp "DNS [1-13]: " -e -i 3 DNSC
 done
 
 # Assign the DNS variable (which is used in the docker-compose.yml)
 case "$DNSC" in
-    1) DNS=$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf) ;;
-    2) DNS="127.0.0.1" ;; # Use localhost, requires Unbound setup later
-    3) DNS="1.1.1.1" ;;
-    4) DNS="9.9.9.9" ;;
-    5) DNS="9.9.9.10" ;;
-    6) DNS="80.67.169.12" ;;
-    7) DNS="84.200.69.80" ;;
-    8) DNS="208.67.222.222" ;;
-    9) DNS="8.8.8.8" ;;
-    10) DNS="77.88.8.8" ;;
-    11) DNS="94.140.14.14" ;;
-    12) DNS="8.8.8.8" ;; # Fallback/Default for NextDNS as it needs custom client config
-    13) 
-        # For simplicity in this script, Custom defaults to Google DNS. 
-        # A full script would require a prompt for DNS1/DNS2 here.
-        read -rp "Enter Custom Primary DNS IP: " CUSTOM_DNS
-        DNS="${CUSTOM_DNS:-8.8.8.8}"
-        ;;
-    *) DNS="1.1.1.1" ;; # Safety fallback
+    1) DNS=$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf) ;;
+    2) DNS="127.0.0.1" ;;
+    3) DNS="1.1.1.1" ;;
+    4) DNS="9.9.9.9" ;;
+    5) DNS="9.9.9.10" ;;
+    6) DNS="80.67.169.12" ;;
+    7) DNS="84.200.69.80" ;;
+    8) DNS="208.67.222.222" ;;
+    9) DNS="8.8.8.8" ;;
+    10) DNS="77.88.8.8" ;;
+    11) DNS="94.140.14.14" ;;
+    12) DNS="8.8.8.8" ;;
+    13)
+        read -rp "Enter Custom Primary DNS IP: " CUSTOM_DNS
+        DNS="${CUSTOM_DNS:-8.8.8.8}"
+        ;;
+    *) DNS="1.1.1.1" ;;
 esac
 
 # Docker installation
