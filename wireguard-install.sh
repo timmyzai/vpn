@@ -237,19 +237,12 @@ set_port() {
     local pattern="$1"
     local replace="$2"
     local file="$3"
-    local INDENT="      "
-
-    awk -v pat="$pattern" -v rep="${INDENT}- \"$replace\"" '
-        {
-            if (index($0, pat) > 0 && !done) {
-                print rep
-                done=1
-            }
-            print
-        }
-    ' "$file" > "${file}.tmp"
-
-    mv "${file}.tmp" "$file"
+    
+    # Use sed to find the line containing the pattern and substitute the entire line
+    # with the new port mapping, maintaining the required YAML formatting.
+    # The original file line might look like:      - 51820:51820/udp
+    # This sed command replaces the old line with the new, correctly indented one.
+    sed -i "/${pattern}/c\\      - \"${replace}\"" "$file"
 }
 
 ensure_restart() {
