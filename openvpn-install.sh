@@ -52,6 +52,60 @@ if [ "$EUID" -ne 0 ]; then
     exit $?
 fi
 
+
+show_menu
+read -rp "Select an option [1-3]: " CHOICE
+
+case "$CHOICE" in
+  1) echo "Proceeding with installation..." ;;
+  2) uninstall_wg_easy ;;
+  3) exit 0 ;;
+  *) echo "Invalid choice"; exit 1 ;;
+esac
+
+show_menu() {
+    echo "==============================="
+    echo " WireGuard / wg-easy Installer "
+    echo "==============================="
+    echo "1) Install wg-easy"
+    echo "2) Uninstall wg-easy and clean up"
+    echo "3) Exit"
+    echo
+}
+
+uninstall_wg_easy() {
+    echo "Stopping wg-easy..."
+    docker rm -f wg-easy 2>/dev/null || true
+
+    echo "Removing Docker network..."
+    docker network rm wg-easy_wg 2>/dev/null || true
+
+    echo "Removing Docker volume..."
+    docker volume rm wg-easy_etc_wireguard 2>/dev/null || true
+
+    echo "Removing wg-easy image..."
+    docker rmi ghcr.io/wg-easy/wg-easy:15 2>/dev/null || true
+
+    echo "Removing wg-easy working directory..."
+    rm -rf /etc/docker/containers/wg-easy
+
+    echo "Removing sysctl config..."
+    rm -f /etc/sysctl.d/wg-easy.conf
+    sysctl --system >/dev/null 2>&1 || true
+
+    echo
+    echo "🧹 Optional: prune unused Docker resources"
+    read -rp "Run 'docker system prune -af'? (y/N): " PRUNE
+
+    if [[ "$PRUNE" =~ ^[Yy]$ ]]; then
+        docker system prune -af
+    fi
+
+    echo
+    echo "✔ wg-easy has been fully uninstalled."
+    exit 0
+}
+
 # ------------------------------------------------------------
 # CONFIGURATION
 # ------------------------------------------------------------
