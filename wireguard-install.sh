@@ -1,19 +1,4 @@
 #!/bin/bash
-# -----------------------------------------------------------------------------------
-# 🚀 WireGuard VPN Installer & Management Script (using wg-easy)
-# -----------------------------------------------------------------------------------
-# ⚙️ Compatibility:
-#   - OS Support: Debian/Ubuntu (22.04+ recommended)
-#   - Requires Docker + Compose plugin
-#
-# 🛡️ Security:
-#   - Admin UI routing modes (Direct IP / Public ALB / Private ALB)
-#   - Private-IP binding (safe by default)
-#
-# 🛠️ Maintenance:
-#   - View logs, uninstall cleanly, update WG_HOST
-# -----------------------------------------------------------------------------------
-
 set -euo pipefail
 
 # --- Config ---
