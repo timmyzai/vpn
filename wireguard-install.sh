@@ -1,4 +1,65 @@
 #!/bin/bash
+# ------------------------------------------------------------
+# 📜 License & Disclaimer (Enhanced Protection)
+# ------------------------------------------------------------
+# MIT License
+# © Timmy Chin Did Choong
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the “Software”), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+#
+# ⚠️ Extended Disclaimer (Additional Legal Protection)
+#
+# This installer script is provided strictly "as-is". No guarantees, assurances,
+# or support commitments are made regarding functionality, security, stability,
+# or suitability for any purpose. By using this script, you acknowledge and agree
+# to the following:
+#
+# • You assume full responsibility for any system changes, failures, or damages.
+# • The author is NOT liable for misconfiguration, service downtime, data loss,
+#   security breaches, unauthorized access, privacy exposure, or any operational
+#   or financial impact caused by using this script.
+# • You acknowledge that VPN deployment, encryption usage, and network tunneling
+#   may be subject to local laws, regulations, or compliance requirements.
+#   You are fully responsible for ensuring your own legal and regulatory compliance.
+# • The author provides NO warranty that the script is secure, bug-free, or
+#   appropriate for production environments.
+# • The author provides NO obligation for updates, patches, security fixes, or support.
+# • You must independently review, validate, and test this script before deploying it
+#   in any environment, including development, testing, staging, or production.
+# • If you modify, redistribute, or use a modified version of this script, you assume
+#   full responsibility for any consequences arising from your changes.
+#
+# ❗ Important Clarification
+# This script is NOT affiliated with, endorsed by, or supported by:
+# • WireGuard
+# • wg-easy
+# • OpenVPN
+# • Any VPN provider, project, or organization
+#
+# This script is provided for educational and operational convenience only.
+# Improper use of VPNs may lead to legal, security, or privacy implications for
+# which the author assumes zero responsibility.
+#
+# USE THIS SCRIPT ENTIRELY AT YOUR OWN RISK.
+# ------------------------------------------------------------
+
+
 set -euo pipefail
 
 readonly WG_DIR="/etc/docker/containers/wg-easy"
