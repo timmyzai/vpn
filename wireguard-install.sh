@@ -237,21 +237,6 @@ ensure_restart() {
     sed -i '\|image:.*wg-easy|a\    restart: unless-stopped' "$file"
 }
 
-inject_healthcheck() {
-    local file="$1"
-    grep -q "healthcheck:" "$file" && return 0
-
-    # Insert correctly-indented healthcheck after the image line
-    sed -i '
-      \|image: ghcr.io/wg-easy/wg-easy:15|a\
-    healthcheck:\n\
-      test: ["CMD", "curl", "-fsS", "http://localhost:51821/health"]\n\
-      interval: 30s\n\
-      timeout: 5s\n\
-      retries: 3
-    ' "$file"
-}
-
 # ------------------------------------------------------------
 #  MAIN LOGIC
 # ------------------------------------------------------------
@@ -333,7 +318,6 @@ set_port "51820/udp" "${BIND_IP}:${WG_PORT}:51820/udp" "$WG_COMPOSE"
 set_port "${ADMIN_PORT_INTERNAL}/tcp" "0.0.0.0:${ADMIN_PORT}:${ADMIN_PORT_INTERNAL}/tcp" "$WG_COMPOSE"
 
 ensure_restart "$WG_COMPOSE"
-inject_healthcheck "$WG_COMPOSE"
 
 header "Starting wg-easy"
 timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" up -d
