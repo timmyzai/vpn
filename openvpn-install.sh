@@ -45,24 +45,9 @@
 # ------------------------------------------------------------
 set -euo pipefail
 
-# Root enforcement
-if [ "$EUID" -ne 0 ]; then
-    echo "⚠️ Re-running with sudo..."
-    sudo bash "$0" "$@"
-    exit $?
-fi
-
-
-show_menu
-read -rp "Select an option [1-3]: " CHOICE
-
-case "$CHOICE" in
-  1) echo "Proceeding with installation..." ;;
-  2) uninstall_wg_easy ;;
-  3) exit 0 ;;
-  *) echo "Invalid choice"; exit 1 ;;
-esac
-
+# ------------------------------------------------------------
+# MENU FUNCTIONS MUST COME FIRST
+# ------------------------------------------------------------
 show_menu() {
     echo "==============================="
     echo " WireGuard / wg-easy Installer "
@@ -105,6 +90,32 @@ uninstall_wg_easy() {
     echo "✔ wg-easy has been fully uninstalled."
     exit 0
 }
+
+# ------------------------------------------------------------
+# ROOT CHECK
+# ------------------------------------------------------------
+if [ "$EUID" -ne 0 ]; then
+    echo "⚠️ Re-running with sudo..."
+    sudo bash "$0" "$@"
+    exit $?
+fi
+
+# ------------------------------------------------------------
+# SHOW MENU BEFORE ANY INSTALL LOGIC
+# ------------------------------------------------------------
+show_menu
+read -rp "Select an option [1-3]: " CHOICE
+
+case "$CHOICE" in
+  1) echo "Proceeding with installation..." ;;
+  2) uninstall_wg_easy ;;
+  3) exit 0 ;;
+  *) echo "Invalid choice"; exit 1 ;;
+esac
+
+# ------------------------------------------------------------
+# (Now your installation logic starts here)
+# ------------------------------------------------------------
 
 # ------------------------------------------------------------
 # CONFIGURATION
