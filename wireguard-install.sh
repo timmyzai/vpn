@@ -353,7 +353,7 @@ echo -e "Admin Password: \033[1m${WG_PASSWORD}\033[0m" # Bold the password for v
 # ------------------------------------------------------------
 echo "Protocol: HTTP"
 echo "Port: 51821"
-echo "Path: /setup/1"
+echo "Path: /login"
 echo "Success codes: 200"
 echo "Healthy threshold: 2"
 echo "Unhealthy threshold: 5"
