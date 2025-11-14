@@ -1,21 +1,4 @@
 #!/bin/bash
-# -----------------------------------------------------------------------------------
-# 🚀 OpenVPN Installer & Management Script
-# -----------------------------------------------------------------------------------
-# ⚙️ Compatibility:
-#   - OS Support: **Debian/Ubuntu**
-#
-# 🛡️ Security & Crypto:
-#   - Encryption: **AES-256-GCM** / **SHA256** standard.
-#   - Keys: Uses **ECC (prime256v1)** for fast, modern cryptography.
-#   - Tunnel Security: Implements **tls-crypt** (`ta.key`) for tunnel obfuscation.
-#
-# 🌐 Network & Configuration:
-#   - Protocols: Supports **UDP** (Default/Speed) and **TCP** (Stability).
-#   - Public IP: Automatic detection with **manual override**.
-#   - DNS: Choice of **System**, **Cloudflare**, **Google**, or **Quad9** DNS.
-#   - Routing: Sets up **IPTables MASQUERADE** for NAT.
-
 set -e
 
 # ------------------ BASIC CHECKS ------------------
