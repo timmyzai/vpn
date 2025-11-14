@@ -58,6 +58,18 @@
 #
 # USE THIS SCRIPT ENTIRELY AT YOUR OWN RISK.
 # ------------------------------------------------------------
+#!/bin/bash
+# ------------------------------------------------------------
+# 📜 License & Disclaimer (Enhanced Protection)
+# ------------------------------------------------------------
+# MIT License
+# © Timmy Chin Did Choong
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the “Software”), to deal
+# in the Software without restriction...
+# ------------------------------------------------------------
+
 set -euo pipefail
 
 readonly WG_DIR="/etc/docker/containers/wg-easy"
@@ -67,29 +79,29 @@ readonly ADMIN_PORT_INTERNAL=51821
 readonly TIMEOUT=30
 
 # ------------------------------------------------------------
-#  AUTO-DETECT AWS VPC DNS
+#  AUTO-DETECT SYSTEM DNS (Cloud-agnostic + systemd-aware)
 # ------------------------------------------------------------
 
-detect_vpc_dns() {
-    # Get MAC of primary interface (usually eth0)
-    local mac
-    mac=$(cat /sys/class/net/eth0/address)
+detect_system_dns() {
+    local resolvconf
 
-    # Query AWS metadata for VPC CIDR
-    local cidr
-    cidr=$(curl -s http://169.254.169.254/latest/meta-data/network/interfaces/macs/${mac}/vpc-ipv4-cidr-block || true)
+    # If using systemd-resolved stub (127.0.0.53), use actual upstream file
+    if grep -q "127.0.0.53" "/etc/resolv.conf"; then
+        resolvconf="/run/systemd/resolve/resolv.conf"
+    else
+        resolvconf="/etc/resolv.conf"
+    fi
 
-    if [[ -z "$cidr" ]]; then
-        echo "ERROR: Unable to detect VPC CIDR from AWS metadata." >&2
+    # Extract the first valid IPv4 DNS server
+    local dns
+    dns=$(awk '/^nameserver/ && $2 !~ /^127\./ && $2 ~ /^[0-9.]+$/ {print $2; exit}' "$resolvconf")
+
+    if [[ -z "$dns" ]]; then
+        echo "ERROR: Could not auto-detect DNS from $resolvconf" >&2
         exit 1
     fi
 
-    # Extract first 3 octets (VPC base)
-    local base
-    base=$(echo "$cidr" | cut -d'.' -f1-3)
-
-    # AWS VPC DNS is always <vpc_base>.2
-    echo "${base}.2"
+    echo "$dns"
 }
 
 # ------------------------------------------------------------
@@ -144,9 +156,7 @@ get_public_ip() {
 }
 
 # ------------------------------------------------------------
-#  INSTALL DOCKER — UNIVERSAL ACROSS DISTROS
-# ------------------------------------------------------------
-# (ALL YOUR DOCKER INSTALL FUNCTIONS REMAIN UNCHANGED)
+#  INSTALL DOCKER
 # ------------------------------------------------------------
 
 install_docker_debian() {
@@ -188,7 +198,6 @@ install_docker_amazon2() {
     amazon-linux-extras install docker -y
     systemctl enable --now docker
 
-    # Compose plugin (manual install)
     local version="v2.24.4"
     curl -SL "https://github.com/docker/compose/releases/download/${version}/docker-compose-linux-${ARCH}" \
         -o /usr/local/bin/docker-compose
@@ -299,7 +308,7 @@ ADMIN_PORT=${ADMIN_PORT:-80}
 
 echo
 echo "DNS for clients:"
-echo "1) AWS VPC DNS (auto detect)"
+echo "1) Use system DNS (auto-detect from /etc/resolv.conf) — recommended"
 echo "2) Cloudflare 1.1.1.1"
 echo "3) Google 8.8.8.8"
 echo "4) Quad9 9.9.9.9"
@@ -307,7 +316,7 @@ read -rp "DNS [1-4]: " D
 D=${D:-1}
 
 case "$D" in
-    1) DNS="$(detect_vpc_dns)" ;;
+    1) DNS="$(detect_system_dns)" ;;
     2) DNS="1.1.1.1" ;;
     3) DNS="8.8.8.8" ;;
     4) DNS="9.9.9.9" ;;
