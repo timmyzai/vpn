@@ -24,39 +24,24 @@
 # THE SOFTWARE.
 #
 # ⚠️ Extended Disclaimer (Additional Legal Protection)
-#
 # This installer script is provided strictly "as-is". No guarantees, assurances,
 # or support commitments are made regarding functionality, security, stability,
-# or suitability for any purpose. By using this script, you acknowledge and agree
-# to the following:
+# or suitability for any purpose. By using this script, you acknowledge and agree:
 #
 # • You assume full responsibility for any system changes, failures, or damages.
-# • The author is NOT liable for misconfiguration, service downtime, data loss,
-#   security breaches, unauthorized access, privacy exposure, or any operational
-#   or financial impact caused by using this script.
-# • You acknowledge that VPN deployment, encryption usage, and network tunneling
-#   may be subject to local laws, regulations, or compliance requirements.
-#   You are fully responsible for ensuring your own legal and regulatory compliance.
-# • The author provides NO warranty that the script is secure, bug-free, or
-#   appropriate for production environments.
-# • The author provides NO obligation for updates, patches, security fixes, or support.
-# • You must independently review, validate, and test this script before deploying it
-#   in any environment, including development, testing, staging, or production.
-# • If you modify, redistribute, or use a modified version of this script, you assume
-#   full responsibility for any consequences arising from your changes.
+# • The author is NOT liable for misconfiguration, downtime, data loss, breaches,
+#   unauthorized access, privacy exposure, or financial impact.
+# • You acknowledge VPN usage may be regulated by local laws; you are responsible
+#   for all compliance and legal considerations.
+# • The author provides NO warranty this script is secure or production-safe.
+# • No obligation for updates, patches, or support is provided.
+# • If you modify or redistribute this script, you assume full responsibility.
 #
 # ❗ Important Clarification
-# This script is NOT affiliated with, endorsed by, or supported by:
-# • WireGuard
-# • wg-easy
-# • OpenVPN
-# • Any VPN provider, project, or organization
+# This script is NOT affiliated with or endorsed by:
+# • WireGuard • wg-easy • OpenVPN • Any VPN provider or organization
 #
-# This script is provided for educational and operational convenience only.
-# Improper use of VPNs may lead to legal, security, or privacy implications for
-# which the author assumes zero responsibility.
-#
-# USE THIS SCRIPT ENTIRELY AT YOUR OWN RISK.
+# Use this script **entirely at your own risk**.
 # ------------------------------------------------------------
 set -euo pipefail
 
@@ -67,11 +52,12 @@ if [ "$EUID" -ne 0 ]; then
     exit $?
 fi
 
-# --- Config ---
+# ------------------------------------------------------------
+# CONFIGURATION
+# ------------------------------------------------------------
 readonly EASY_RSA_DIR="/etc/openvpn/easy-rsa"
 readonly OPEN_VPN_SERVER_CONF="/etc/openvpn/server/server.conf"
 
-# --- Helpers ---
 header() { echo -e "\n===== $1 =====\n"; }
 
 detect_os() {
@@ -102,7 +88,6 @@ check_pkg() {
     done
 }
 
-# --- Safe easyrsa binary auto-locator ---
 find_easyrsa_bin() {
     local base="$1"
     local bin
@@ -114,7 +99,9 @@ find_easyrsa_bin() {
     echo "$bin"
 }
 
-# ---------------- CLIENT CREATOR ----------------
+# ------------------------------------------------------------
+# CLIENT CREATOR
+# ------------------------------------------------------------
 new_client() {
     N="$1"
     cd "$EASY_RSA_DIR"
@@ -161,9 +148,12 @@ EOF
     echo "✅ Client created: $OUT"
 }
 
-# ---------------- INITIAL CHECKS ----------------
+# ------------------------------------------------------------
+# INITIAL CHECKS
+# ------------------------------------------------------------
 OS_TYPE=$(detect_os)
 [[ "$OS_TYPE" = unsupported ]] && { echo "Unsupported OS"; exit 1; }
+
 [[ ! -e /dev/net/tun ]] && { echo "TUN not enabled"; exit 1; }
 
 LOCAL_IP=$(hostname -I | awk '{print $1}')
@@ -171,12 +161,16 @@ PUBLIC_IP=$(curl -4 -s ifconfig.me || echo "$LOCAL_IP")
 
 export PUBLIC_IP LOCAL_IP
 
-# ---------------- EXISTING INSTALL ----------------
+# ------------------------------------------------------------
+# MAINTENANCE MODE
+# ------------------------------------------------------------
 if [ -f "$OPEN_VPN_SERVER_CONF" ]; then
     header "OPENVPN DETECTED"
 
     export PROTO=$(awk '/^proto/ {print $2}' "$OPEN_VPN_SERVER_CONF")
     export PORT=$(awk '/^port/ {print $2}' "$OPEN_VPN_SERVER_CONF")
+
+    EASYRSA_BIN=$(find_easyrsa_bin "$EASY_RSA_DIR")
 
     echo "1) Add user"
     echo "2) Revoke user"
@@ -214,20 +208,37 @@ if [ -f "$OPEN_VPN_SERVER_CONF" ]; then
             exit;;
         5)
             systemctl disable --now openvpn-server@server || true
+
+            # Firewall cleanup
+            if command -v firewall-cmd >/dev/null 2>&1; then
+                firewall-cmd --remove-port="${PORT}/${PROTO}" --permanent 2>/dev/null || true
+                firewall-cmd --remove-masquerade --permanent 2>/dev/null || true
+                firewall-cmd --reload 2>/dev/null || true
+            else
+                iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -j MASQUERADE 2>/dev/null && \
+                iptables -t nat -D POSTROUTING -s 10.8.0.0/24 -j MASQUERADE || true
+
+                if command -v netfilter-persistent >/dev/null; then
+                    netfilter-persistent save >/dev/null 2>&1 || true
+                fi
+            fi
+
             rm -rf /etc/openvpn /etc/sysctl.d/99-openvpn.conf
-            echo "OpenVPN removed"
+            echo "OpenVPN uninstalled & firewall cleaned"
             exit;;
         *) exit;;
     esac
 fi
 
-# ---------------- INSTALL DEPENDENCIES ----------------
+# ------------------------------------------------------------
+# INSTALL DEPENDENCIES
+# ------------------------------------------------------------
 header "INSTALLING DEPENDENCIES"
 
 if [ "$OS_TYPE" = debian ]; then
     check_pkg openvpn easy-rsa iptables curl iptables-persistent netfilter-persistent
 else
-    check_pkg openvpn iptables curl
+    check_pkg openvpn curl iptables
     if [ ! -d /usr/share/easy-rsa ]; then
         echo "Installing EasyRSA source..."
         VER=3.1.7
@@ -239,10 +250,17 @@ else
         mv "$TMP/EasyRSA-${VER}/"* /usr/share/easy-rsa/
         rm -rf "$TMP"
     fi
-    check_pkg iptables-services
 fi
 
-# ---------------- INTERACTIVE SETUP ----------------
+# SELinux fix (RHEL Systems)
+if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" = "Enforcing" ]; then
+    semanage fcontext -a -t openvpn_etc_t "/etc/openvpn(/.*)?" 2>/dev/null || true
+    restorecon -Rv /etc/openvpn >/dev/null 2>&1 || true
+fi
+
+# ------------------------------------------------------------
+# INTERACTIVE SETUP
+# ------------------------------------------------------------
 header "INTERACTIVE SETUP"
 
 echo "Detected Public IP: $PUBLIC_IP"
@@ -264,7 +282,9 @@ case ${D:-1} in
     4) DNS=9.9.9.9;;
 esac
 
-# ---------------- EASYRSA SETUP ----------------
+# ------------------------------------------------------------
+# EASYRSA SETUP
+# ------------------------------------------------------------
 header "SETTING UP EASYRSA PKI"
 
 rm -rf "$EASY_RSA_DIR"
@@ -274,6 +294,7 @@ EASYRSA_BIN=$(find_easyrsa_bin "$EASY_RSA_DIR")
 chmod +x "$EASYRSA_BIN"
 
 cd "$EASY_RSA_DIR"
+
 cat > vars <<EOF
 set_var EASYRSA_ALGO ec
 set_var EASYRSA_CURVE prime256v1
@@ -304,12 +325,15 @@ ca /etc/openvpn/easy-rsa/pki/ca.crt
 cert /etc/openvpn/easy-rsa/pki/issued/server.crt
 key /etc/openvpn/easy-rsa/pki/private/server.key
 crl-verify /etc/openvpn/server/crl.pem
+status /etc/openvpn/server/openvpn-status.log
 verb 3
 EOF
 
 touch /etc/openvpn/server/crl.pem
 
-# ---------------- FIREWALL ----------------
+# ------------------------------------------------------------
+# FIREWALL SETUP
+# ------------------------------------------------------------
 header "CONFIGURING FIREWALL"
 
 echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-openvpn.conf
@@ -320,17 +344,17 @@ if command -v firewall-cmd >/dev/null 2>&1; then
     firewall-cmd --add-masquerade --permanent
     firewall-cmd --reload
 else
+    iptables -t nat -C POSTROUTING -s 10.8.0.0/24 -j MASQUERADE 2>/dev/null || \
     iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -j MASQUERADE
+
     if command -v netfilter-persistent >/dev/null; then
         netfilter-persistent save
-    elif command -v service >/dev/null && service iptables save; then
-        :
-    else
-        echo "⚠ iptables rule may not persist reboot"
     fi
 fi
 
-# ---------------- START OPENVPN ----------------
+# ------------------------------------------------------------
+# START OPENVPN
+# ------------------------------------------------------------
 header "STARTING OPENVPN"
 
 systemctl enable openvpn-server@server
