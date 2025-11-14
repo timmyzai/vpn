@@ -229,9 +229,11 @@ echo "    11) AdGuard DNS (Anycast: worldwide, Ad-blocking: 94.140.14.14)"
 echo "    12) NextDNS (Customizable filtering) - Not supported by single IP"
 echo "    13) Custom"
 
+# Initialize DNSC to prevent "unbound variable" error, defaulting to option 1
+DNSC=1
 # Input reading loop and validation for options 1 through 13
 until [[ $DNSC =~ ^[0-9]+$ ]] && [ "$DNSC" -ge 1 ] && [ "$DNSC" -le 13 ]; do
-    read -rp "DNS [1-13]: " -e -i 3 DNSC
+    read -rp "DNS [1-13]: " -e -i 1 DNSC
 done
 
 # Assign the DNS variable (which is used in the docker-compose.yml)
