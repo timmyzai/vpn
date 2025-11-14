@@ -251,10 +251,18 @@ services:
     container_name: wg-easy
 
     environment:
+      # --- Unattended Setup (only works on FIRST START) ---
+      - INIT_ENABLED=true
+      - INIT_USERNAME=admin
+      - INIT_PASSWORD=$(openssl rand -base64 16)
+      - INIT_HOST=${HOST}
+      - INIT_PORT=${WG_PORT}
+      - INIT_DNS=${DNS}
+
+      # --- Normal runtime values (for UI + client config) ---
       - WG_HOST=${HOST}
       - WG_PORT=${WG_PORT}
       - PORT=51821
-      - WG_DEFAULT_DNS=${DNS}
       - WG_ALLOWED_IPS=0.0.0.0/0,::/0
 
     volumes:
