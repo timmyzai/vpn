@@ -61,278 +61,212 @@
 #!/bin/bash
 set -euo pipefail
 
-readonly WG_DIR="/etc/docker/containers/wg-easy"
-readonly WG_ENV="$WG_DIR/.env"
-readonly WG_COMPOSE="$WG_DIR/docker-compose.yml"
-readonly ADMIN_PORT_INTERNAL=51821
-readonly TIMEOUT=30
+# ============================================================
+# MENU FUNCTIONS
+# ============================================================
 
-# ------------------------------------------------------------
-#  AUTO-DETECT SYSTEM DNS (Cloud-agnostic + systemd-aware)
-# ------------------------------------------------------------
-
-detect_system_dns() {
-    local resolvconf
-
-    # If using systemd-resolved stub (127.0.0.53), use actual upstream file
-    if grep -q "127.0.0.53" "/etc/resolv.conf"; then
-        resolvconf="/run/systemd/resolve/resolv.conf"
-    else
-        resolvconf="/etc/resolv.conf"
-    fi
-
-    # Extract the first valid IPv4 DNS server
-    local dns
-    dns=$(awk '/^nameserver/ && $2 !~ /^127\./ && $2 ~ /^[0-9.]+$/ {print $2; exit}' "$resolvconf")
-
-    if [[ -z "$dns" ]]; then
-        echo "ERROR: Could not auto-detect DNS from $resolvconf" >&2
-        exit 1
-    fi
-
-    echo "$dns"
+show_menu() {
+    echo
+    echo "==============================="
+    echo "     WireGuard / wg-easy       "
+    echo "==============================="
+    echo "1) Install wg-easy"
+    echo "2) Uninstall wg-easy and clean up"
+    echo "3) Exit"
+    echo
 }
 
-# ------------------------------------------------------------
-#  UTILITY FUNCTIONS
-# ------------------------------------------------------------
+uninstall_wg_easy() {
+    echo "Stopping wg-easy..."
+    docker rm -f wg-easy 2>/dev/null || true
+
+    echo "Removing Docker network..."
+    docker network rm wg-easy_wg 2>/dev/null || true
+
+    echo "Removing Docker volume..."
+    docker volume rm wg-easy_etc_wireguard 2>/dev/null || true
+
+    echo "Removing wg-easy image..."
+    docker rmi ghcr.io/wg-easy/wg-easy:15 2>/dev/null || true
+
+    echo "Removing installation directory..."
+    rm -rf /etc/docker/containers/wg-easy
+
+    echo "Removing sysctl configuration..."
+    rm -f /etc/sysctl.d/wg-easy.conf
+    sysctl --system >/dev/null 2>&1 || true
+
+    echo
+    read -rp "Run 'docker system prune -af'? (y/N): " PRUNE
+    if [[ "$PRUNE" =~ ^[Yy]$ ]]; then
+        docker system prune -af
+    fi
+
+    echo "Uninstall complete."
+    exit 0
+}
+
+# ============================================================
+# ROOT CHECK
+# ============================================================
+if [ "$EUID" -ne 0 ]; then
+    echo "Re-running with sudo..."
+    sudo bash "$0" "$@"
+    exit $?
+fi
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+show_menu
+read -rp "Select an option [1-3]: " OPTION
+
+case "$OPTION" in
+    1) echo "Proceeding with installation..." ;;
+    2) uninstall_wg_easy ;;
+    3) exit 0 ;;
+    *) echo "Invalid option"; exit 1 ;;
+esac
+
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
 
 header() { echo -e "\n=== $1 ===\n"; }
 
 detect_os() {
     if [ -e /etc/debian_version ]; then
         OS="debian"
-    elif [ -e /etc/redhat-release ]; then
-        OS="rhel"
     elif grep -qi "amazon linux" /etc/os-release; then
         OS="amazon"
-    elif grep -qi "fedora" /etc/os-release; then
-        OS="fedora"
+    elif [ -e /etc/redhat-release ]; then
+        OS="rhel"
     else
-        echo "Unsupported OS"
-        exit 1
+        OS="unknown"
     fi
 }
 
 detect_arch() {
-    ARCH=$(uname -m)
-    case "$ARCH" in
+    case "$(uname -m)" in
         x86_64) ARCH="amd64" ;;
-        aarch64 | arm64) ARCH="arm64" ;;
-        *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+        aarch64|arm64) ARCH="arm64" ;;
+        *) echo "Unsupported architecture"; exit 1 ;;
     esac
 }
 
 ensure_sysctl() {
     echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/wg-easy.conf
-    sysctl -p /etc/sysctl.d/wg-easy.conf >/dev/null 2>&1 || true
+    sysctl -p /etc/sysctl.d/wg-easy.conf >/dev/null || true
 }
 
 find_compose() {
     if docker compose version >/dev/null 2>&1; then
         COMPOSE="docker compose"
-    elif command -v docker-compose >/dev/null 2>&1; then
+    elif command -v docker-compose >/dev/null; then
         COMPOSE="docker-compose"
     else
-        echo "ERROR: docker compose plugin not found"
+        echo "docker compose not installed."
         exit 1
     fi
 }
 
-get_public_ip() {
-    ip=$(timeout 5 curl -s ifconfig.me || true)
-    [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "$ip" || echo "$1"
-}
-
-# ------------------------------------------------------------
-#  INSTALL DOCKER
-# ------------------------------------------------------------
-
-install_docker_debian() {
-    apt-get update -y
-    apt-get install -y ca-certificates curl gnupg lsb-release
-
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-        -o /etc/apt/keyrings/docker.asc
-    chmod a+r /etc/apt/keyrings/docker.asc
-
-    . /etc/os-release
-    echo \
-"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-https://download.docker.com/linux/${ID} ${VERSION_CODENAME} stable" \
-        > /etc/apt/sources.list.d/docker.list
-
-    apt-get update -y
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-}
-
-install_docker_rhel() {
-    yum install -y yum-utils device-mapper-persistent-data lvm2
-    yum-config-manager --add-repo \
-        https://download.docker.com/linux/centos/docker-ce.repo
-
-    yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-}
-
-install_docker_fedora() {
-    dnf -y install dnf-plugins-core
-    dnf config-manager --add-repo \
-        https://download.docker.com/linux/fedora/docker-ce.repo
-
-    dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-}
-
-install_docker_amazon2() {
-    amazon-linux-extras install docker -y
-    systemctl enable --now docker
-
-    local version="v2.24.4"
-    curl -SL "https://github.com/docker/compose/releases/download/${version}/docker-compose-linux-${ARCH}" \
-        -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-}
-
-install_docker_amazon2023() {
-    dnf install -y dnf-plugins-core
-    dnf config-manager --add-repo \
-        https://download.docker.com/linux/fedora/docker-ce.repo
-
-    dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-}
-
 install_docker() {
     case "$OS" in
-        debian) install_docker_debian ;;
-        rhel)   install_docker_rhel ;;
-        fedora) install_docker_fedora ;;
+        debian)
+            apt-get update -y
+            apt-get install -y docker.io docker-compose-plugin
+            ;;
         amazon)
-            if grep -q "Amazon Linux 2" /etc/os-release; then
-                install_docker_amazon2
-            else
-                install_docker_amazon2023
-            fi
+            amazon-linux-extras install docker -y
+            systemctl enable --now docker
+            ;;
+        rhel)
+            yum install -y docker docker-compose-plugin || true
+            systemctl enable --now docker
+            ;;
+        *)
+            echo "Unsupported OS"
+            exit 1
             ;;
     esac
-
-    systemctl enable --now docker || true
 }
 
-# ------------------------------------------------------------
-#  FILE PATCHING FUNCTIONS
-# ------------------------------------------------------------
-
-set_port() {
-    local pattern="$1"
-    local replace="$2"
-    local file="$3"
-
-    # Use | as the sed delimiter so patterns with / (like 51820/udp) are safe
-    sed -i "\|${pattern}|c\      - \"${replace}\"" "$file"
-}
-
-ensure_restart() {
-    local file="$1"
-    grep -q "restart: unless-stopped" "$file" && return 0
-    sed -i '\|image:.*wg-easy|a\    restart: unless-stopped' "$file"
-}
-
-# ------------------------------------------------------------
-#  MAIN LOGIC
-# ------------------------------------------------------------
+# ============================================================
+# INSTALLATION PROCESS
+# ============================================================
 
 detect_os
 detect_arch
 
-header "WIREGUARD INSTALLER (Universal Production Version)"
+header "WIREGUARD INSTALLER"
 
 PRIVATE_IP=$(hostname -I | awk '{print $1}')
-PUBLIC_IP=$(get_public_ip "$PRIVATE_IP")
+PUBLIC_IP=$(curl -s ifconfig.me || echo "$PRIVATE_IP")
 
-echo "Private: $PRIVATE_IP"
-echo "Public : $PUBLIC_IP"
-
-read -rp "WG_HOST [$PUBLIC_IP]: " WG_HOST
-WG_HOST="${WG_HOST:-$PUBLIC_IP}"
-
-echo
-echo "Admin UI Exposure:"
-echo "1) Direct IP (HTTP)"
-echo "2) Public ALB (HTTPS → private)"
-echo "3) Private ALB (Internal HTTPS)"
-read -rp "Mode [3]: " UI_MODE
-UI_MODE=${UI_MODE:-3}
-
-BIND_IP="$PRIVATE_IP"
+echo "Private IP: $PRIVATE_IP"
+echo "Public  IP: $PUBLIC_IP"
+read -rp "WG_HOST [$PUBLIC_IP]: " HOST
+HOST="${HOST:-$PUBLIC_IP}"
 
 read -rp "WG Port [51820]: " WG_PORT
-WG_PORT=${WG_PORT:-51820}
+WG_PORT="${WG_PORT:-51820}"
 
 read -rp "Admin EXTERNAL Port [80]: " ADMIN_PORT
-ADMIN_PORT=${ADMIN_PORT:-80}
+ADMIN_PORT="${ADMIN_PORT:-80}"
 
 echo
 echo "DNS for clients:"
-echo "1) Use system DNS (auto-detect from /etc/resolv.conf) — recommended"
-echo "2) Cloudflare 1.1.1.1"
-echo "3) Google 8.8.8.8"
-echo "4) Quad9 9.9.9.9"
-read -rp "DNS [1-4]: " D
-D=${D:-1}
+echo "1) Auto-detect"
+echo "2) Cloudflare"
+echo "3) Google"
+echo "4) Quad9"
+read -rp "DNS [1]: " DNSC
 
-case "$D" in
-    1) DNS="$(detect_system_dns)" ;;
+case "${DNSC:-1}" in
+    1) DNS=$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf) ;;
     2) DNS="1.1.1.1" ;;
     3) DNS="8.8.8.8" ;;
     4) DNS="9.9.9.9" ;;
-    *) DNS="$(detect_system_dns)" ;;
 esac
 
-ensure_sysctl
-
-if ! command -v docker >/dev/null 2>&1; then
-    header "Installing Docker"
+# Docker installation
+if ! command -v docker >/dev/null; then
     install_docker
 fi
 
 find_compose
+ensure_sysctl
 
-mkdir -p "$WG_DIR"
-cd "$WG_DIR"
+# Installation directory
+mkdir -p /etc/docker/containers/wg-easy
+cd /etc/docker/containers/wg-easy
 
+# Download compose
 curl -fsSL -o docker-compose.yml \
     https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
 
+# Write env
 cat > .env <<EOF
-WG_HOST=${WG_HOST}
+WG_HOST=${HOST}
 WG_PORT=${WG_PORT}
-PORT=${ADMIN_PORT_INTERNAL}
+PORT=51821
 WG_DEFAULT_DNS=${DNS}
 WG_ALLOWED_IPS=0.0.0.0/0,::/0
 EOF
-
 chmod 600 .env
 
-# Patch docker-compose.yml
-set_port "51820/udp" "${BIND_IP}:${WG_PORT}:51820/udp" "$WG_COMPOSE"
-set_port "${ADMIN_PORT_INTERNAL}/tcp" "0.0.0.0:${ADMIN_PORT}:${ADMIN_PORT_INTERNAL}/tcp" "$WG_COMPOSE"
-
-ensure_restart "$WG_COMPOSE"
+# Patch ports
+sed -i "\|51820/udp|c\      - \"${PRIVATE_IP}:${WG_PORT}:51820/udp\"" docker-compose.yml
+sed -i "\|51821/tcp|c\      - \"0.0.0.0:${ADMIN_PORT}:51821/tcp\"" docker-compose.yml
 
 header "Starting wg-easy"
-timeout "$TIMEOUT" $COMPOSE -f "$WG_COMPOSE" up -d
-
-header "INSTALL COMPLETE"
-echo "Endpoint: ${WG_HOST}:${WG_PORT}/udp"
-echo
-echo "Admin UI:"
-case "$UI_MODE" in
-    1) echo "http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
-    2) echo "HTTPS via PUBLIC ALB → http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
-    3) echo "HTTPS via PRIVATE ALB → http://${PRIVATE_IP}:${ADMIN_PORT}" ;;
-esac
+$COMPOSE up -d
 
 echo
-echo "Config stored in: $WG_ENV"
-echo "Admin will be created on first visit."
+echo "=== INSTALL COMPLETE ==="
+echo "WireGuard Endpoint: ${HOST}:${WG_PORT}"
+echo "Admin UI: http://${PRIVATE_IP}:${ADMIN_PORT}"
+echo "Config stored at: /etc/docker/containers/wg-easy/.env"
+
 exit 0
+
