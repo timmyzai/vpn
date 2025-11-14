@@ -241,14 +241,42 @@ ensure_sysctl
 mkdir -p /etc/docker/containers/wg-easy
 cd /etc/docker/containers/wg-easy
 
-# Download compose
-curl -fsSL -o docker-compose.yml \
-    https://raw.githubusercontent.com/wg-easy/wg-easy/master/docker-compose.yml
+# ------------------------------------------------------------
+# Write our own clean, stable docker-compose.yml
+# ------------------------------------------------------------
+cat > docker-compose.yml <<EOF
+version: "3.9"
 
-# Inject env_file .env into wg-easy service
-sed -i '/container_name: wg-easy/a \    env_file:\n      - .env' docker-compose.yml
+services:
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:15
+    container_name: wg-easy
+    env_file:
+      - .env
+    volumes:
+      - etc_wireguard:/etc/wireguard
+      - /lib/modules:/lib/modules:ro
+    ports:
+      - "${PRIVATE_IP}:${WG_PORT}:51820/udp"
+      - "0.0.0.0:${ADMIN_PORT}:51821/tcp"
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv6.conf.all.forwarding=1
+      - net.ipv6.conf.default.forwarding=1
 
-# Write env
+volumes:
+  etc_wireguard:
+EOF
+
+# ------------------------------------------------------------
+# Write environment file
+# ------------------------------------------------------------
 cat > .env <<EOF
 WG_HOST=${HOST}
 WG_PORT=${WG_PORT}
@@ -257,10 +285,6 @@ WG_DEFAULT_DNS=${DNS}
 WG_ALLOWED_IPS=0.0.0.0/0,::/0
 EOF
 chmod 600 .env
-
-# Patch ports
-sed -i "\|51820/udp|c\      - \"${PRIVATE_IP}:${WG_PORT}:51820/udp\"" docker-compose.yml
-sed -i "\|51821/tcp|c\      - \"0.0.0.0:${ADMIN_PORT}:51821/tcp\"" docker-compose.yml
 
 header "Starting wg-easy"
 $COMPOSE up -d
