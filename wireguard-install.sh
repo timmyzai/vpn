@@ -1,6 +1,6 @@
 #!/bin/bash
 # ------------------------------------------------------------
-# 📜 License & Disclaimer (Enhanced Protection)
+# 📜 License & Disclaimer
 # ------------------------------------------------------------
 # MIT License
 # © Timmy Chin Did Choong
@@ -59,17 +59,6 @@
 # USE THIS SCRIPT ENTIRELY AT YOUR OWN RISK.
 # ------------------------------------------------------------
 #!/bin/bash
-# ------------------------------------------------------------
-# 📜 License & Disclaimer (Enhanced Protection)
-# ------------------------------------------------------------
-# MIT License
-# © Timmy Chin Did Choong
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the “Software”), to deal
-# in the Software without restriction...
-# ------------------------------------------------------------
-
 set -euo pipefail
 
 readonly WG_DIR="/etc/docker/containers/wg-easy"
@@ -237,31 +226,29 @@ set_port() {
     local pattern="$1"
     local replace="$2"
     local file="$3"
-    
-    # Use sed to find the line containing the pattern and substitute the entire line
-    # with the new port mapping, maintaining the required YAML formatting.
-    # The original file line might look like:      - 51820:51820/udp
-    # This sed command replaces the old line with the new, correctly indented one.
-    sed -i "/${pattern}/c\\      - \"${replace}\"" "$file"
+
+    # Use | as the sed delimiter so patterns with / (like 51820/udp) are safe
+    sed -i "\|${pattern}|c\      - \"${replace}\"" "$file"
 }
 
 ensure_restart() {
     local file="$1"
     grep -q "restart: unless-stopped" "$file" && return 0
-    sed -i "\|image:.*wg-easy|a\\    restart: unless-stopped" "$file"
+    sed -i '\|image:.*wg-easy|a\    restart: unless-stopped' "$file"
 }
 
 inject_healthcheck() {
     local file="$1"
     grep -q "healthcheck:" "$file" && return 0
 
+    # Insert correctly-indented healthcheck after the image line
     sed -i '
-      \|image: ghcr.io/wg-easy/wg-easy|a\
-        healthcheck:\n\
-          test: ["CMD", "curl", "-fsS", "http://localhost:51821/health"]\n\
-          interval: 30s\n\
-          timeout: 5s\n\
-          retries: 3
+      \|image: ghcr.io/wg-easy/wg-easy:15|a\
+    healthcheck:\n\
+      test: ["CMD", "curl", "-fsS", "http://localhost:51821/health"]\n\
+      interval: 30s\n\
+      timeout: 5s\n\
+      retries: 3
     ' "$file"
 }
 
@@ -313,6 +300,7 @@ case "$D" in
     2) DNS="1.1.1.1" ;;
     3) DNS="8.8.8.8" ;;
     4) DNS="9.9.9.9" ;;
+    *) DNS="$(detect_system_dns)" ;;
 esac
 
 ensure_sysctl
@@ -340,6 +328,7 @@ EOF
 
 chmod 600 .env
 
+# Patch docker-compose.yml
 set_port "51820/udp" "${BIND_IP}:${WG_PORT}:51820/udp" "$WG_COMPOSE"
 set_port "${ADMIN_PORT_INTERNAL}/tcp" "0.0.0.0:${ADMIN_PORT}:${ADMIN_PORT_INTERNAL}/tcp" "$WG_COMPOSE"
 
